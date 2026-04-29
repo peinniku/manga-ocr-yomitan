@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga OCR → Yomitan Bridge
 // @namespace    local.manga-ocr-yomitan
-// @version      0.2.1
+// @version      0.2.2
 // @description  Shift-hover an image to OCR (manga-ocr) and inject invisible text so Yomitan picks it up like normal text.
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -19,8 +19,10 @@
   const OCR_ENDPOINT = 'http://127.0.0.1:7331/ocr';
   const MIN_DIM = 200;          // skip icons / avatars
   const STATUS_TIMEOUT = 1500;
+  const RESULT_CACHE_LIMIT = 128;
 
   const inflight = new Map();   // src -> Promise<result>
+  const resultCache = new Map(); // src -> result (bounded LRU)
   let lastImg = null;
 
   // --- styles ----------------------------------------------------------------
@@ -123,18 +125,33 @@
   }
 
   async function ocr(src) {
+    if (resultCache.has(src)) {
+      const cached = resultCache.get(src);
+      resultCache.delete(src);
+      resultCache.set(src, cached);
+      return cached;
+    }
     if (inflight.has(src)) return inflight.get(src);
     const p = (async () => {
       const dataUrl = await imageToDataUrl(src);
       const r = await gm('POST', OCR_ENDPOINT, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-MOY-Client': 'userscript',
+        },
         body: JSON.stringify({ image_data: dataUrl, cache_key: src }),
         responseType: 'json',
       });
-      return typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
+      const result = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
+      resultCache.set(src, result);
+      while (resultCache.size > RESULT_CACHE_LIMIT) {
+        const oldest = resultCache.keys().next().value;
+        resultCache.delete(oldest);
+      }
+      return result;
     })();
     inflight.set(src, p);
-    p.catch(() => inflight.delete(src));
+    p.finally(() => inflight.delete(src));
     return p;
   }
 
@@ -265,6 +282,7 @@
 
     if (img.complete && img.clientWidth) reposition();
     else img.addEventListener('load', reposition, { once: true });
+    img._moyCleanup = cleanup;
   }
 
   // Floating debug toggle button (shows up on every page where the script runs).
@@ -291,13 +309,27 @@
   ensureToggleBtn();
 
   // --- trigger ---------------------------------------------------------------
+  function getImgKey(img) {
+    return img.currentSrc || img.src || '';
+  }
+
+  function resetImgState(img) {
+    if (img && typeof img._moyCleanup === 'function') img._moyCleanup();
+    delete img._moyCleanup;
+    delete img._moyOverlay;
+    img.dataset.moyState = '';
+  }
+
   async function processImg(img) {
     if (!img || !(img instanceof HTMLImageElement)) return;
-    if (img.dataset.moyState === 'done' || img.dataset.moyState === 'loading') return;
     if (img.naturalWidth < MIN_DIM && img.naturalHeight < MIN_DIM) return;
 
-    const src = img.currentSrc || img.src;
+    const src = getImgKey(img);
     if (!src) return;
+    if (img.dataset.moyKey && img.dataset.moyKey !== src) resetImgState(img);
+    img.dataset.moyKey = src;
+    if (img.dataset.moyState === 'done' && img._moyOverlay) return;
+    if (img.dataset.moyState === 'loading') return;
 
     img.dataset.moyState = 'loading';
     status('OCR…');
