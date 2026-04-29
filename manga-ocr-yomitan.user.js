@@ -285,7 +285,7 @@
     img._moyCleanup = cleanup;
   }
 
-  // Floating debug toggle button (shows up on every page where the script runs).
+  // Floating debug toggle button. Created lazily after OCR is used on a page.
   let toggleBtn;
   let debugOn = false;
   function applyDebug() {
@@ -306,8 +306,6 @@
     }, true);
     document.documentElement.appendChild(toggleBtn);
   }
-  ensureToggleBtn();
-
   // --- trigger ---------------------------------------------------------------
   function getImgKey(img) {
     return img.currentSrc || img.src || '';
@@ -332,6 +330,7 @@
     if (img.dataset.moyState === 'loading') return;
 
     img.dataset.moyState = 'loading';
+    ensureToggleBtn();
     status('OCR…');
     console.log('[moy] start OCR:', src.slice(0, 120), 'natural', img.naturalWidth, 'x', img.naturalHeight);
     try {
