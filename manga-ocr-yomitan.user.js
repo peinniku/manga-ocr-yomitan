@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga OCR → Yomitan Bridge
 // @namespace    local.manga-ocr-yomitan
-// @version      0.2.0
+// @version      0.2.1
 // @description  Shift-hover an image to OCR (manga-ocr) and inject invisible text so Yomitan picks it up like normal text.
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -40,8 +40,11 @@
       font-family: "Noto Sans JP", "Hiragino Sans", "Yu Gothic", sans-serif;
     }
     .moy-block.vertical p { writing-mode: vertical-rl; }
+    /* Keep glyph color transparent (so the original art is unobstructed) but
+       show a subtle gray background under whatever Yomitan currently selects,
+       mirroring its normal hover-scan feedback on regular text pages. */
     .moy-block ::selection, .moy-block::selection,
-    .moy-block p::selection { background: transparent !important; color: transparent !important; }
+    .moy-block p::selection { background: rgba(128, 128, 128, 0.32) !important; color: transparent !important; }
     .moy-overlay.moy-debug .moy-block { outline: 1px solid #f33; background: rgba(255,80,80,.08); }
     .moy-overlay.moy-debug .moy-block p { outline: 1px solid #3f3; color: rgba(255,40,40,.85); }
     #moy-status {
