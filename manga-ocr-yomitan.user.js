@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga OCR → Yomitan Bridge
 // @namespace    local.manga-ocr-yomitan
-// @version      0.2.4
+// @version      0.2.5
 // @description  Shift-hover an image to OCR (manga-ocr) and inject invisible text so Yomitan picks it up like normal text.
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -117,8 +117,28 @@
     });
   }
 
-  async function imageToDataUrl(src) {
-    const r = await gm('GET', src, { responseType: 'blob' });
+  function preferOcrSrc(src) {
+    try {
+      const url = new URL(src, location.href);
+      if (url.hostname === 'pbs.twimg.com' && url.pathname.startsWith('/media/')) {
+        url.searchParams.set('name', 'orig');
+        return url.href;
+      }
+    } catch (_) {
+      // Keep the original source when a page uses a non-standard URL.
+    }
+    return src;
+  }
+
+  async function imageToDataUrl(src, fallbackSrc = src) {
+    let r;
+    try {
+      r = await gm('GET', src, { responseType: 'blob' });
+    } catch (e) {
+      if (src === fallbackSrc) throw e;
+      console.warn('[moy] preferred OCR image failed, falling back:', src, e);
+      r = await gm('GET', fallbackSrc, { responseType: 'blob' });
+    }
     return await new Promise((resolve, reject) => {
       const fr = new FileReader();
       fr.onload = () => resolve(fr.result);
@@ -128,33 +148,34 @@
   }
 
   async function ocr(src) {
-    if (resultCache.has(src)) {
-      const cached = resultCache.get(src);
-      resultCache.delete(src);
-      resultCache.set(src, cached);
+    const ocrSrc = preferOcrSrc(src);
+    if (resultCache.has(ocrSrc)) {
+      const cached = resultCache.get(ocrSrc);
+      resultCache.delete(ocrSrc);
+      resultCache.set(ocrSrc, cached);
       return cached;
     }
-    if (inflight.has(src)) return inflight.get(src);
+    if (inflight.has(ocrSrc)) return inflight.get(ocrSrc);
     const p = (async () => {
-      const dataUrl = await imageToDataUrl(src);
+      const dataUrl = await imageToDataUrl(ocrSrc, src);
       const r = await gm('POST', OCR_ENDPOINT, {
         headers: {
           'Content-Type': 'application/json',
           'X-MOY-Client': 'userscript',
         },
-        body: JSON.stringify({ image_data: dataUrl, cache_key: src }),
+        body: JSON.stringify({ image_data: dataUrl, cache_key: ocrSrc }),
         responseType: 'json',
       });
       const result = typeof r.response === 'string' ? JSON.parse(r.response) : r.response;
-      resultCache.set(src, result);
+      resultCache.set(ocrSrc, result);
       while (resultCache.size > RESULT_CACHE_LIMIT) {
         const oldest = resultCache.keys().next().value;
         resultCache.delete(oldest);
       }
       return result;
     })();
-    inflight.set(src, p);
-    p.finally(() => inflight.delete(src));
+    inflight.set(ocrSrc, p);
+    p.finally(() => inflight.delete(ocrSrc));
     return p;
   }
 
