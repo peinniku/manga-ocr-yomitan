@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga OCR → Yomitan Bridge
 // @namespace    local.manga-ocr-yomitan
-// @version      0.2.3
+// @version      0.2.4
 // @description  Shift-hover an image to OCR (manga-ocr) and inject invisible text so Yomitan picks it up like normal text.
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -20,6 +20,9 @@
   const MIN_DIM = 200;          // skip icons / avatars
   const STATUS_TIMEOUT = 1500;
   const RESULT_CACHE_LIMIT = 128;
+  const MAX_BLOCK_AREA_RATIO = 0.14;
+  const MAX_BLOCK_HEIGHT_RATIO = 0.75;
+  const MAX_BLOCK_WIDTH_RATIO = 0.55;
 
   const inflight = new Map();   // src -> Promise<result>
   const resultCache = new Map(); // src -> result (bounded LRU)
@@ -182,11 +185,23 @@
 
     const W = result.width, H = result.height;
     const pct = (v, total) => (100 * v / total) + '%';
+    let renderedBlocks = 0;
+    let skippedBlocks = 0;
+
+    function isOversizedBlock(width, height) {
+      return (width * height) / (W * H) > MAX_BLOCK_AREA_RATIO ||
+        width / W > MAX_BLOCK_WIDTH_RATIO ||
+        height / H > MAX_BLOCK_HEIGHT_RATIO;
+    }
 
     for (const b of result.blocks) {
       const [bx1, by1, bx2, by2] = b.box;
       const bw = bx2 - bx1, bh = by2 - by1;
       if (bw <= 0 || bh <= 0) continue;
+      if (isOversizedBlock(bw, bh)) {
+        skippedBlocks++;
+        continue;
+      }
 
       const blk = document.createElement('div');
       blk.className = 'moy-block' + (b.vertical ? ' vertical' : '');
@@ -233,6 +248,7 @@
         blk.appendChild(p);
       }
       overlay.appendChild(blk);
+      renderedBlocks++;
     }
 
     pickOverlayHost(img).appendChild(overlay);
@@ -294,6 +310,7 @@
     if (img.complete && img.clientWidth) reposition();
     else img.addEventListener('load', reposition, { once: true });
     img._moyCleanup = cleanup;
+    return { renderedBlocks, skippedBlocks };
   }
 
   // Floating debug toggle button. Created lazily after OCR is used on a page.
@@ -348,12 +365,13 @@
       const result = await ocr(src);
       const n = (result.blocks || []).length;
       console.log('[moy] OCR result:', n, 'blocks', result);
-      renderOverlay(img, result);
+      const overlayStats = renderOverlay(img, result) || { renderedBlocks: 0, skippedBlocks: 0 };
       img.dataset.moyState = 'done';
       const overlayEl = img._moyOverlay;
       console.log('[moy] overlay rendered:', overlayEl, 'blocks:', overlayEl ? overlayEl.children.length : 0,
         'rect:', overlayEl ? overlayEl.getBoundingClientRect() : null);
-      status(n ? `OCR ✓ (${n} blocks)` : 'OCR: no text found');
+      const skipped = overlayStats.skippedBlocks;
+      status(n ? `OCR ✓ (${overlayStats.renderedBlocks}/${n} blocks${skipped ? `, ${skipped} skipped` : ''})` : 'OCR: no text found');
     } catch (e) {
       img.dataset.moyState = '';  // allow retry
       console.warn('[moy] OCR failed:', e);
