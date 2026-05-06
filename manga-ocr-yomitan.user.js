@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Manga OCR → Yomitan Bridge
 // @namespace    local.manga-ocr-yomitan
-// @version      0.2.2
+// @version      0.2.3
 // @description  Shift-hover an image to OCR (manga-ocr) and inject invisible text so Yomitan picks it up like normal text.
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -226,7 +226,10 @@
         p.style.top    = pct(ly1 - by1, bh);
         p.style.width  = pct(lw, bw);
         p.style.height = pct(lh, bh);
-        p.dataset.fontRatio = (b.vertical ? lw : lh) / H;
+        p.dataset.lineWidth = String(lw);
+        p.dataset.lineHeight = String(lh);
+        p.dataset.charCount = String([...text].length || 1);
+        p.dataset.vertical = b.vertical ? '1' : '0';
         blk.appendChild(p);
       }
       overlay.appendChild(blk);
@@ -254,8 +257,16 @@
       overlay.style.top    = r.top + 'px';
       overlay.style.width  = r.width + 'px';
       overlay.style.height = r.height + 'px';
-      for (const p of overlay.querySelectorAll('p[data-font-ratio]')) {
-        p.style.fontSize = (r.height * parseFloat(p.dataset.fontRatio)) + 'px';
+      const sx = r.width / W;
+      const sy = r.height / H;
+      for (const p of overlay.querySelectorAll('p[data-line-width]')) {
+        const lineW = parseFloat(p.dataset.lineWidth) * sx;
+        const lineH = parseFloat(p.dataset.lineHeight) * sy;
+        const chars = Math.max(1, parseInt(p.dataset.charCount, 10) || 1);
+        const isVertical = p.dataset.vertical === '1';
+        const byThickness = isVertical ? lineW * 0.92 : lineH * 0.92;
+        const byLength = isVertical ? (lineH / chars) * 1.02 : (lineW / chars) * 1.45;
+        p.style.fontSize = Math.max(6, Math.min(byThickness, byLength)) + 'px';
       }
     }
 
