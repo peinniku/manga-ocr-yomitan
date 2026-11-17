@@ -1,0 +1,62 @@
+{
+  "logs": [
+    {
+      "id": "log-0",
+      "card_id": "c1",
+      "rating": 3,
+      "reviewed_at": 1763000000000,
+      "device_id": "mac",
+      "duration_ms": null
+    },
+    {
+      "id": "log-1",
+      "card_id": "c1",
+      "rating": 3,
+      "reviewed_at": 1763345600000,
+      "device_id": "phone",
+      "duration_ms": null
+    },
+    {
+      "id": "log-2",
+      "card_id": "c1",
+      "rating": 1,
+      "reviewed_at": 1764296000000,
+      "device_id": "mac",
+      "duration_ms": null
+    },
+    {
+      "id": "log-3",
+      "card_id": "c1",
+      "rating": 3,
+      "reviewed_at": 1764296600000,
+      "device_id": "phone",
+      "duration_ms": null
+    },
+    {
+      "id": "log-4",
+      "card_id": "c1",
+      "rating": 4,
+      "reviewed_at": 1764728000000,
+      "device_id": "mac",
+      "duration_ms": null
+    },
+    {
+      "id": "log-5",
+      "card_id": "c1",
+      "rating": 2,
+      "reviewed_at": 1768184000000,
+      "device_id": "phone",
+      "duration_ms": null
+    }
+  ],
+  "expected": {
+    "phase": "review",
+    "due": 1768881138879,
+    "stability": 15.164888,
+    "stability_fast": 171.42061,
+    "difficulty": 8.878304,
+    "last_review": 1768184000000,
+    "reps": 6,
+    "lapses": 1
+  }
+}

@@ -1,295 +1,141 @@
-# manga-ocr-yomitan
+# pic_yomi
 
-OCR Japanese text inside any web image and feed it to [Yomitan](https://yomitan.wiki/) as if it were normal page text — so the same hover-and-add-to-Anki flow you use on text pages just works on manga, fan art, screenshots, and other in-image text.
+在漫画、网页图片、甚至任意 App 的画面上查日语生词：识别图中文字 → 日日词典释义（新明解等）+ 中文解释 → 一键加入生词本 → 用 FSRS 记忆曲线背 → 手机离线复习、自动同步。
 
-> [中文文档 ↓](#中文文档)
+不再依赖 Yomitan 和 Anki。所有数据都在你自己的 Mac 上。
 
----
-
-## How it works
-
-1. A small local Python server runs [`mokuro`](https://github.com/kha-white/mokuro) (text detection + manga-OCR recognition). Given an image it returns the bounding box and recognized text of every line, plus whether each block is vertical or horizontal.
-2. A userscript watches `Shift`-hover on `<img>` elements. On hover it sends the image to the local server, then injects invisible, correctly-positioned text spans on top of the image — using the OCR result, including per-line coordinates when available, with proper `writing-mode: vertical-rl` for vertical bubbles.
-3. Yomitan sees these spans like any other Japanese text on a webpage. Hover to look up, click `+` to add to Anki — same flow you already have. The recognized line becomes the "example sentence" captured on your Anki card.
-
-The first hover on each image takes 1–2 seconds for OCR; recent results are cached in memory, so repeat hovers on the same image are instant.
-
-## What you need
-
-These steps install everything from scratch. If you already have some of them, skip ahead.
-
-- **Python + conda** for the OCR server
-- **A modern browser** (Firefox / Zen / Chrome / Edge / Brave — anything that supports userscript managers)
-- **A userscript manager** ([Violentmonkey](https://violentmonkey.github.io/) — recommended, open source — or Tampermonkey)
-- **[Yomitan](https://yomitan.wiki/)** with at least one Japanese dictionary loaded; optionally [AnkiConnect](https://foosoft.net/projects/anki-connect/) configured if you want one-click Anki cards
-
-Hardware: Apple Silicon Macs use MPS automatically. CUDA is used if available. CPU-only also works, just a bit slower per image.
-
-## Install
-
-### 1. Install Miniconda *(skip if you already have `conda`)*
-
-macOS (Apple Silicon):
-
-```bash
-curl -LO https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh
-bash Miniconda3-latest-MacOSX-arm64.sh
-```
-
-For Intel Mac / Linux / Windows, see the official [Miniconda installers](https://www.anaconda.com/docs/getting-started/miniconda/install).
-
-After install, restart your terminal and verify: `conda --version`.
-
-### 2. Clone this repo
-
-```bash
-git clone https://github.com/peinniku/manga-ocr-yomitan.git
-cd manga-ocr-yomitan
-```
-
-### 3. Create the environment and install dependencies
-
-```bash
-conda create -n manga-ocr-yomitan python=3.11 -y
-conda activate manga-ocr-yomitan
-pip install -r requirements.txt
-```
-
-This pulls in `mokuro`, which brings `manga-ocr`, `comic-text-detector`, and PyTorch. Total disk footprint is roughly **2–3 GB** — PyTorch is most of it.
-
-### 4. Start the OCR server
-
-```bash
-uvicorn ocr_server:app --host 127.0.0.1 --port 7331
-```
-
-**The first run downloads the OCR models (~600 MB)** to `~/.cache/`. After that, startup takes a few seconds. Keep this terminal open whenever you want OCR to work — when you close it, the script falls back to "no OCR available".
-
-Quick check from another terminal:
-
-```bash
-curl http://127.0.0.1:7331/health
-# {"ok":true,"loaded":false}
-```
-
-### 5. Install a userscript manager
-
-[Violentmonkey](https://violentmonkey.github.io/) (recommended) or Tampermonkey, from your browser's extension store.
-
-### 6. Install Yomitan *(skip if you already use it)*
-
-Follow the [Yomitan setup guide](https://yomitan.wiki/setup/). Minimum:
-
-- Yomitan extension installed
-- One JMDict / 新明解 / etc. dictionary imported
-- *(For Anki cards)* AnkiConnect installed in Anki, plus a Yomitan card template configured
-
-This project doesn't change anything in Yomitan — it just makes images "look like text" to it.
-
-### 7. Install this userscript
-
-Click the **[Install userscript](https://github.com/peinniku/manga-ocr-yomitan/raw/main/manga-ocr-yomitan.user.js)** link (or open `manga-ocr-yomitan.user.js` from your local clone). Your userscript manager will prompt to install — confirm.
-
-The first time it tries to fetch an image, your manager will ask for permission to connect to `*` and `127.0.0.1`. Allow both.
-
-### 8. Confirm Yomitan's modifier key
-
-Yomitan's default popup trigger is `Shift`, which is what this script also listens for. If you've changed it in Yomitan, edit the `keydown`/`mouseover` handlers in the userscript to match.
-
-## Usage
-
-1. Open any page with Japanese text inside images — manga sites, Pixiv, X/Twitter, screenshots embedded in articles.
-2. Hover an image and **hold `Shift`** for 1–2 seconds. A status indicator appears at the bottom-right (`OCR…` → `OCR ✓ (N blocks)`).
-3. Now `Shift`-hover the actual Japanese text — Yomitan pops up exactly like on any text page.
-4. Click `+` in the Yomitan popup to add to Anki. The captured sentence is the OCR'd line from that bubble.
-
-Recent images stay cached in memory, so later hovers on the same image are instant without letting the cache grow forever.
-
-### Debug overlay
-
-A small eye icon (👁) sits at the bottom-left of the page. Click it to toggle visible OCR boxes:
-
-- Red border = detected block
-- Green border = each line within the block
-- Semi-transparent red glyphs = recognized text
-
-Useful for verifying alignment when trying the script on a new site.
-
-## Limitations & known issues
-
-- **Only `<img>` elements**. CSS `background-image` and `<canvas>` aren't handled.
-- **Skips images smaller than 200×200 px** (avoids OCR'ing avatars/icons). Adjust `MIN_DIM` in the userscript.
-- **First OCR per image takes 1–2 seconds**. Hold `Shift` long enough.
-- **OCR quality depends on the image**. Clean dialog bubbles are very accurate; hand-drawn sound effects, heavily stylized fonts, and very small text often miss.
-- **Strict CSP sites** (e.g. some pages on x.com) require `GM_addStyle` to apply our CSS. The script already uses it; if your userscript manager doesn't grant that permission, styles won't apply and you'll see misaligned spans.
-- **OCR server is local-only**. It listens on `127.0.0.1`, only accepts browser requests from local origins, and is meant to stay on your machine; don't expose it on a public interface.
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---|---|
-| `OCR result: 0 blocks` in console | mokuro detected no text. Try a clearer / larger version of the image. |
-| `network error` in console | OCR server isn't running, or you're on a different port than `7331`. |
-| `OCR ✓` shows but Yomitan doesn't pop up | Yomitan disabled on that domain, or your modifier key differs from `Shift`. |
-| Overlay is rendered (debug shows boxes) but Yomitan still doesn't trigger | Site is blocking pointer events on the image. Open an issue with the URL. |
-| Gray rectangle covering the image after hovering | A previous version had this from text selection. Update to v0.2.0+. |
-
-## Acknowledgments
-
-This project is glue code on top of much harder work by others:
-
-- [mokuro](https://github.com/kha-white/mokuro) — detection + recognition pipeline + the original "OCR overlay for manga HTML" idea
-- [manga-ocr](https://github.com/kha-white/manga-ocr) — the recognition model
-- [comic-text-detector](https://github.com/dmMaze/comic-text-detector) — the detection model
-- [Yomitan](https://yomitan.wiki/) — the dictionary popup that does all the actual word-lookup work
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+> v1.0 是对早期版本（mokuro + Yomitan 胶水脚本）的完全重写。[English summary ↓](#english)
 
 ---
 
-## 中文文档
+## 它由什么组成
 
-在网页图片里 OCR 日文，把识别结果以隐形文字的形式叠在图上，让 [Yomitan](https://yomitan.wiki/) 像处理普通网页文字一样查词、加 Anki。专门解决看漫画/二创/截图时遇到生词无法被 Yomitan 拾取的问题。
-
-### 工作原理
-
-1. 本地一个小 Python 服务跑 [`mokuro`](https://github.com/kha-white/mokuro)（文字检测 + manga-OCR 识别）。给一张图，返回每行的位置坐标、识别结果、以及是否竖排。
-2. 油猴脚本监听 `Shift` 悬停 `<img>` 元素。悬停时把图发给本地服务，拿到 OCR 结果后在图上注入透明的、定位准确的文本 span；如果 OCR 给出了逐行坐标，就直接按逐行坐标摆放，竖排框自动加 `writing-mode: vertical-rl`。
-3. Yomitan 把这些 span 当作普通日文：悬停查词、点 `+` 加 Anki，跟你平时网页上的流程完全一样。Anki 卡片上抓到的"例句"就是那个气泡的 OCR 文本。
-
-每张图首次 OCR 需要 1–2 秒，最近识别过的结果会缓存在内存里，之后再悬停同一张图是瞬时的。
-
-### 你需要
-
-下面的步骤会引导你从零装齐这些。如果有些已经装了，跳过就行。
-
-- **Python + conda**——给 OCR 服务用
-- **现代浏览器**（Firefox / Zen / Chrome / Edge / Brave，任何支持油猴扩展的都行）
-- **油猴管理器**（[Violentmonkey](https://violentmonkey.github.io/) 推荐，开源；或 Tampermonkey）
-- **[Yomitan](https://yomitan.wiki/)**——至少导入了一本日语词典；如果想加 Anki，还要装好 [AnkiConnect](https://foosoft.net/projects/anki-connect/) 和卡片模板
-
-硬件：Apple Silicon 自动用 MPS；有 CUDA 用 CUDA；纯 CPU 也能跑，只是每张图首次 OCR 慢一点。
-
-### 安装
-
-#### 1. 装 Miniconda *（已经有 `conda` 跳过）*
-
-macOS（Apple Silicon）：
-
-```bash
-curl -LO https://repo.anaconda.com/miniconda/Miniconda3-latest-MacOSX-arm64.sh
-bash Miniconda3-latest-MacOSX-arm64.sh
+```
+┌─────────────── Mac：pic_yomi.app（Rust + GPUI）────────────────┐
+│  复习 / 词单 / 查词 / 设置 界面                                  │
+│  ⌥⌘J 全局屏幕查词：截取鼠标附近 → OCR → 浮窗查词                   │
+│  OCR：RT-DETR 文字检测 + charspot 逐字识别（ONNX Runtime，CPU）    │
+│  词典：导入 Yomitan 词典包（SQLite）+ 词形还原 + lindera 注音       │
+│  中文解释：任意 OpenAI 兼容接口 / Gemini（按句缓存）                 │
+│  FSRS-7 排程（官方 fsrs crate）                                  │
+│  本地 API 127.0.0.1:7331 ←── 浏览器扩展（Chrome / Zen / Firefox） │
+└───────────────┬──────────────────────────────────────────────┘
+                │ tailscale serve（HTTPS，只有你的设备能访问）
+        手机 PWA（离线复习，联网自动同步；FSRS 用同一份 Rust 代码编译成 WebAssembly）
 ```
 
-Intel Mac / Linux / Windows 见 [Miniconda 官方安装包](https://www.anaconda.com/docs/getting-started/miniconda/install)。
-
-装完重开终端，验证：`conda --version`。
-
-#### 2. 克隆本仓库
-
-```bash
-git clone https://github.com/peinniku/manga-ocr-yomitan.git
-cd manga-ocr-yomitan
-```
-
-#### 3. 建环境装依赖
-
-```bash
-conda create -n manga-ocr-yomitan python=3.11 -y
-conda activate manga-ocr-yomitan
-pip install -r requirements.txt
-```
-
-会拉 `mokuro` + `manga-ocr` + `comic-text-detector` + PyTorch，总大小约 **2–3 GB**——PyTorch 占大头。
-
-#### 4. 启动 OCR 服务
-
-```bash
-uvicorn ocr_server:app --host 127.0.0.1 --port 7331
-```
-
-**首次启动会下载 OCR 模型（约 600 MB）** 到 `~/.cache/`。之后启动几秒。要让 OCR 工作，这个终端要一直开着——关掉之后脚本就回到"没 OCR 可用"的状态。
-
-另开一个终端验证：
-
-```bash
-curl http://127.0.0.1:7331/health
-# {"ok":true,"loaded":false}
-```
-
-#### 5. 安装油猴管理器
-
-在你浏览器的扩展商店装 [Violentmonkey](https://violentmonkey.github.io/)（推荐）或 Tampermonkey。
-
-#### 6. 安装 Yomitan *（已经在用跳过）*
-
-按 [Yomitan 安装指南](https://yomitan.wiki/setup/) 来。最低要求：
-
-- Yomitan 扩展已装
-- 至少导入了一本词典（JMDict / 新明解 等）
-- *（要加 Anki 的话）* Anki 装好 AnkiConnect，Yomitan 里配好卡片模板
-
-本项目不改 Yomitan 任何设置——只是让图片"对 Yomitan 来说像文字"。
-
-#### 7. 安装本油猴脚本
-
-点 **[安装脚本](https://github.com/peinniku/manga-ocr-yomitan/raw/main/manga-ocr-yomitan.user.js)** 链接（或打开本地 clone 里的 `manga-ocr-yomitan.user.js`）。油猴会弹安装确认，同意。
-
-第一次悬停图片要拉图时，油猴会再问"是否允许连 `*` 和 `127.0.0.1`"，全部允许。
-
-#### 8. 确认 Yomitan 修饰键
-
-Yomitan 默认弹窗触发键是 `Shift`，也是这个脚本监听的。如果你改成了别的，需要改脚本里的 `keydown`/`mouseover` 处理逻辑。
-
-### 使用
-
-1. 打开任意有日文图片的页面——漫画站、Pixiv、X/Twitter、文章里嵌的截图都行。
-2. 悬停图片，**按住 `Shift`** 1–2 秒。右下角出现状态条：`OCR…` → `OCR ✓ (N blocks)`。
-3. 然后 `Shift` 悬停图里的日文——Yomitan 像在普通文字页一样弹窗。
-4. 点 Yomitan 弹窗的 `+` 加 Anki，例句就是那个气泡的 OCR 文本。
-
-最近 OCR 过的图片会缓存在内存里，之后悬停秒出，同时不会让缓存无限增长。
-
-### Debug 可视化
-
-页面左下角有个眼睛图标（👁），点一下切换识别框可视化：
-
-- 红框 = 检测到的 block
-- 绿框 = block 内的每一行 line
-- 半透明红字 = 识别出的文本
-
-新站点验证对齐时很有用。
-
-### 已知限制
-
-- **只支持 `<img>` 元素**，不识别 CSS `background-image` 和 `<canvas>`。
-- **跳过 200×200 以下的图**（避免 OCR 头像/图标）。要改的话改脚本里的 `MIN_DIM`。
-- **每张图首次 OCR 1–2 秒**，第一次按 `Shift` 要按久点。
-- **OCR 准确度看图本身**。普通对话气泡很准；手绘音效、花体字、太小的字常 miss。
-- **CSP 严格的站点**（比如 x.com 部分页面）需要 `GM_addStyle` 才能注入样式。脚本已经用了；如果你的油猴管理器没批这个权限，样式不生效会出现错位。
-- **OCR 服务只接受本地连接**。它监听 `127.0.0.1`，只接受本地来源的浏览器请求；不要把它暴露在公网。
-
-### 故障排查
-
-| 现象 | 可能原因 |
+| 目录 | 内容 |
 |---|---|
-| Console 显示 `OCR result: 0 blocks` | mokuro 没检测到文字。换更清晰/更大的图试试。 |
-| Console 显示 `network error` | OCR 服务没启动，或端口不是 `7331`。 |
-| `OCR ✓` 出现但 Yomitan 不弹 | 该域名 Yomitan 被禁用，或修饰键不是 `Shift`。 |
-| Overlay 渲染了（debug 能看到框）但 Yomitan 还是不弹 | 站点拦截了图片的鼠标事件。把 URL 提 issue。 |
-| 悬停后图片上出现一片灰色矩形挡住文字 | 旧版的文字选中高亮 bug。升级到 v0.2.0+。 |
+| `crates/app` | 桌面程序（GPUI / gpui-kit） |
+| `crates/core` | 词典、查词、OCR、生词卡、同步、LLM、本地 API |
+| `crates/srs` | FSRS-7 排程，同时编译成 WebAssembly 给手机用 |
+| `extension` | 浏览器扩展（网页图片 Shift 悬停识别、网页文字查词） |
+| `web` | 手机复习 PWA（Preact） |
 
-### 致谢
+## OCR：为什么换掉 mokuro
 
-本项目只是把以下更难的工作粘合起来：
+在 [JMangaBench_Read](https://github.com/muscgab/JMangaBench_Read)（2026-10，7,789 个漫画文字框）的 150 个样本上，在这台 M4 上实测：
 
-- [mokuro](https://github.com/kha-white/mokuro)——检测+识别 pipeline，以及"漫画 HTML 文字层叠加"这个原始想法
-- [manga-ocr](https://github.com/kha-white/manga-ocr)——识别模型
-- [comic-text-detector](https://github.com/dmMaze/comic-text-detector)——检测模型
-- [Yomitan](https://yomitan.wiki/)——所有真正的查词工作都是它做的
+| 识别模型 | 字符错误率 | 整句全对 | 速度 |
+|---|---|---|---|
+| **charspot-small（现在）** | **1.49%** | **92.7%** | **19 ms/框**（CPU） |
+| manga-ocr（旧版） | 6.14% | 73.3% | 244 ms/框（GPU） |
 
-### 协议
+文字检测用 RT-DETR（ogkalu/comic-text-and-bubble-detector），整页检测 + 识别约 0.3 秒，不需要 PyTorch。charspot 还会给出**每个字的位置**，所以鼠标指到哪个字就从哪个字开始查。
 
-MIT——见 [LICENSE](LICENSE)。
+## 安装
+
+需要：macOS（Apple Silicon）、[Rust](https://rustup.rs)、Node.js。不需要 Xcode（只要 Command Line Tools）。
+
+```bash
+git clone https://github.com/peinniku/manga-ocr-yomitan.git pic_yomi
+cd pic_yomi
+scripts/bundle-macos.sh --install      # 构建并安装到 /Applications/pic_yomi.app
+```
+
+第一次打开后，在「设置」里：
+
+1. **OCR 模型 → 下载模型**（约 55 MB，带校验）。
+2. **词典 → 导入词典…**：选你的 Yomitan 词典包 `.zip`（例如新明解、大辞林、JPDB 频率、Jitendex）。词典只存在本机，**不会进 Git 仓库**（它们有版权）。
+3. **中文解释**：填接口地址、模型和 API Key，点「测试」。例如 DeepSeek：`https://api.deepseek.com` + `deepseek-flash`；Gemini：`https://generativelanguage.googleapis.com/v1beta` + `gemini-3.5-flash-lite`。不填也能用，只是没有中文解释。
+
+### 屏幕查词（任意 App）
+
+和 Yomitan 一样：**按住 Shift，把鼠标移到日语上**，弹窗跟着鼠标查词，查到的词会在屏幕上标出来；滑到别的字就换词，点别处关闭。按住 Shift 时只截一次图、识别一次，之后滑动只是查已识别的文字，所以跟手。浏览器里默认交给扩展（它直接读网页文字），可在「设置 → 屏幕查词」里打开。
+
+**⌥⌘J** 是另一种用法：识别鼠标附近的文字并打开一个可操作的查词窗口。
+
+横排文字（推文、网页、App 界面）用 macOS 自带的 Vision 识别，漫画竖排文字用上面的 charspot。第一次会请求「屏幕录制」权限（系统设置 → 隐私与安全性 → 录屏与系统录音 → 允许 pic_yomi），截图只在本机处理。
+
+自己打包时建议先运行一次 `scripts/make-signing-cert.sh`：它在钥匙串里建一个本机签名证书，之后每次重新打包签名身份不变，屏幕录制权限不用重新授权。
+
+### 浏览器扩展
+
+```bash
+node extension/build.mjs
+```
+
+- **Chrome**：`chrome://extensions` → 开启开发者模式 → 加载已解压的扩展程序 → 选 `extension/dist/chrome`。
+- **Zen**（长期安装）：Zen 允许关闭扩展签名检查。在 `about:config` 把 `xpinstall.signatures.required` 设为 `false`，然后 `about:addons` → 齿轮 → 从文件安装附加组件 → 选 `extension/dist/picyomi-firefox.xpi`。
+- **Firefox**：正式版必须签名。临时用：`about:debugging` → 此 Firefox → 临时载入附加组件 → 选 `extension/dist/firefox/manifest.json`（重启后失效）；长期用需要自己的 AMO 账号免费签名：`npx web-ext sign --channel=unlisted --source-dir extension/dist/firefox --api-key=… --api-secret=…`。
+
+用法：鼠标放在图片上按住 **Shift** → 识别；再按住 Shift 指向图中或网页上的日语 → 弹出释义 → 「＋ 加入词单」（会保存气泡截图）。
+
+### 手机
+
+1. Mac 和 iPhone 都登录 [Tailscale](https://tailscale.com)，在 Tailscale 后台开启 HTTPS 证书（MagicDNS → HTTPS Certificates）。
+2. 在 Mac 终端运行一次：`tailscale serve --bg 7331`（只在你的 tailnet 内可见，不暴露到公网）。
+3. 打开 pic_yomi →「设置 → 手机同步」，用 iPhone 相机扫二维码，在 Safari 中打开 →「分享 → 添加到主屏幕」。
+
+手机上的复习记录先存在本机，离线也能背；联网（能连到 Mac）时自动同步。两边对同一张卡的复习会合并，并用同一份 FSRS 代码重算排程，不会冲突。
+
+## 数据与隐私
+
+- 数据目录：`~/Library/Application Support/pic_yomi/`（SQLite 数据库、生词卡截图、OCR 模型）。
+- 本地 API 只监听 `127.0.0.1`；除健康检查外，所有接口都要配对令牌。网页无法读取令牌，经 Tailscale 代理的请求只能通过二维码配对。
+- 只有「中文解释」会把**单词和所在句子**发给你配置的 LLM 服务。
+
+## 模型许可
+
+- 检测：ogkalu/comic-text-and-bubble-detector，Apache-2.0。
+- 识别：muscgab/manga-ocr-charspot-small，**CC BY-NC-SA 4.0（仅限非商业使用）**。模型在首次使用时下载，不随仓库分发。
+
+## 开发
+
+```bash
+cargo test --workspace                      # Rust 单元测试（词形还原、查词、FSRS、同步合并…）
+cd web && npm install && npm test           # 手机端：wasm 排程与 Rust 原生结果一致性
+cargo run -p picyomi                        # 运行桌面程序（调试版）
+cargo run -p picyomi-core --bin picyomi-cli -- lookup 食べなかった
+cargo run -p picyomi-core --bin picyomi-cli -- ocr page.jpg
+```
+
+CLI 还有 `import-dict`、`dicts`、`serve`、`set-llm`（Key 从环境变量 `LLM_API_KEY` 读取）、`explain`。
+
+### 从 Anki 迁移
+
+```bash
+cargo run -p picyomi-core --bin picyomi-cli -- import-anki ~/Library/Application\ Support/Anki2/<账户>/collection.anki2 Yomitan
+```
+
+导入带 `Expression` / `Reading` 字段的笔记（Yomitan 制卡的格式），最后一个参数是牌组名（省略则导入所有牌组）。释义优先用本机导入的词典，查不到时保留 Anki 里的文字；Anki 的复习记录会一起导入，FSRS 据此接着排程。Anki 开着也没关系（先在内存里拷一份再读，不改动 Anki）；已在词单里的词会跳过，可以重复运行。
+
+## 致谢
+
+[charspot / JMangaBench_Read](https://github.com/muscgab)、[ogkalu 的检测模型](https://huggingface.co/ogkalu/comic-text-and-bubble-detector)、[fsrs-rs](https://github.com/open-spaced-repetition/fsrs-rs)、[GPUI](https://www.gpui.rs) / [gpui-kit](https://github.com/longbridge/gpui-kit)、[ONNX Runtime / ort](https://ort.pyke.io)、[lindera](https://github.com/lindera/lindera)、Yomitan 词典格式。早期版本基于 [mokuro](https://github.com/kha-white/mokuro) 和 [manga-ocr](https://github.com/kha-white/manga-ocr)。
+
+MIT License — 见 [LICENSE](LICENSE)。
+
+---
+
+## English
+
+pic_yomi looks up Japanese words in manga, web images and any on-screen text, then turns them into flashcards scheduled with FSRS-7, with offline review on your phone.
+
+- **Desktop app** (Rust, GPUI): review, word list, lookup, settings; global hotkey ⌥⌘J OCRs the screen around the cursor.
+- **OCR**: RT-DETR text detection + charspot per-character recognition via ONNX Runtime (1.49% CER vs 6.14% for manga-ocr on a JMangaBench sample, ~0.3 s per page on an M4 CPU).
+- **Dictionaries**: import any Yomitan dictionary zip; rule-based deinflection plus tokenizer fallback; optional Chinese explanations from any OpenAI-compatible or Gemini endpoint.
+- **Browser extension**: Shift-hover images to OCR, Shift-hover text to look up, one click to save the word with a crop of the speech bubble.
+- **Phone**: a PWA reached over `tailscale serve`; reviews work offline and sync later. Scheduling runs the same Rust code compiled to WebAssembly, so devices always agree.
+
+Build with `scripts/bundle-macos.sh --install`. The recognition model is CC BY-NC-SA 4.0 (non-commercial) and is downloaded on first use.

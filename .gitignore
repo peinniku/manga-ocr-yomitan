@@ -24,3 +24,16 @@ Thumbs.db
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local data (imported dictionaries are copyrighted; never commit)
+data/
+
+# Rust build output
+target/
+
+# Built extension / web app
+extension/dist/
+web/dist/
+web/node_modules/
+web/public/srs.wasm
+web/public/icon-*.png
