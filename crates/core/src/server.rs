@@ -20,7 +20,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::cards::{self, Card, SyncRequest};
-use crate::dict;
+use crate::{audio, dict};
 use crate::explain::{self, ExplainRequest, LlmConfig};
 use crate::service::{AddCardRequest, Service};
 
@@ -166,9 +166,50 @@ async fn put_llm(State(svc): State<AppState>, Json(mut cfg): Json<LlmConfig>) ->
     Ok(Json(cfg.redacted()))
 }
 
+async fn get_tts(State(svc): State<AppState>) -> ApiResult<audio::TtsConfig> {
+    Ok(Json(audio::TtsConfig::load(&svc.db)?.redacted()))
+}
+
+async fn put_tts(State(svc): State<AppState>, Json(cfg): Json<audio::TtsConfig>) -> ApiResult<audio::TtsConfig> {
+    cfg.save(&svc.db)?;
+    Ok(Json(audio::TtsConfig::load(&svc.db)?.redacted()))
+}
+
+#[derive(Deserialize)]
+struct AudioQuery {
+    /// Word and its reading.
+    #[serde(default)]
+    e: String,
+    #[serde(default)]
+    r: String,
+    /// A sentence to read instead of the word.
+    #[serde(default)]
+    s: String,
+}
+
+async fn audio(State(svc): State<AppState>, Query(q): Query<AudioQuery>) -> Response {
+    let res = if q.s.trim().is_empty() { audio::word(&svc.db, &q.e, &q.r).await } else { audio::sentence(&svc.db, &q.s, &q.e, &q.r).await };
+    match res {
+        Ok(a) => (
+            [
+                (header::CONTENT_TYPE, a.mime),
+                (header::CACHE_CONTROL, "private, max-age=604800".into()),
+                (header::HeaderName::from_static("x-audio-source"), a.source),
+            ],
+            a.bytes,
+        )
+            .into_response(),
+        Err(e) => ApiError(e).into_response(),
+    }
+}
+
 async fn add_card(State(svc): State<AppState>, Json(r): Json<AddCardRequest>) -> ApiResult<Card> {
     let svc2 = svc.clone();
     let card = tokio::task::spawn_blocking(move || svc2.add_card(&r)).await??;
+    {
+        let (db, e, r, sentence) = (svc.db.clone(), card.expression.clone(), card.reading.clone(), card.sentence.clone());
+        tokio::spawn(async move { audio::prefetch(&db, &e, &r, &sentence).await });
+    }
     if card.explanation.is_none() {
         let id = card.id.clone();
         tokio::spawn(async move {
@@ -229,10 +270,13 @@ async fn sync(State(svc): State<AppState>, Json(r): Json<SyncRequest>) -> ApiRes
 
 async fn srs_settings(State(svc): State<AppState>) -> ApiResult<serde_json::Value> {
     let s = svc.scheduler();
+    let tts = audio::TtsConfig::load(&svc.db)?;
     Ok(Json(json!({
         "desired_retention": s.config.desired_retention,
         "new_per_day": svc.new_cards_per_day(),
         "four_buttons": svc.four_buttons(),
+        "audio_autoplay": tts.autoplay,
+        "voice": if tts.azure_ready() { tts.voice } else { "macos".into() },
     })))
 }
 
@@ -270,6 +314,8 @@ pub fn router(svc: AppState) -> Router {
         .route("/api/explain", post(explain_word))
         .route("/api/settings/llm", get(get_llm).put(put_llm))
         .route("/api/settings/srs", get(srs_settings))
+        .route("/api/settings/tts", get(get_tts).put(put_tts))
+        .route("/api/audio", get(audio))
         .route("/api/cards", get(list_cards).post(add_card))
         .route("/api/cards/exists", get(card_exists))
         .route("/api/cards/{id}", axum::routing::delete(delete_card))

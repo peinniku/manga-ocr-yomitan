@@ -125,6 +125,24 @@ fn main() -> Result<()> {
                 }
             }
         }
+        "audio" => {
+            // audio <word> <reading> [sentence] [out]
+            let e = args.get(1).context("usage: audio <word> <reading> [sentence] [out]")?;
+            let r = args.get(2).map(|s| s.as_str()).unwrap_or("");
+            let sentence = args.get(3).map(|s| s.as_str()).unwrap_or("");
+            let db = picyomi_core::Db::open_default()?;
+            let rt = tokio::runtime::Runtime::new()?;
+            let t = Instant::now();
+            let a = if sentence.is_empty() {
+                rt.block_on(picyomi_core::audio::word(&db, e, r))?
+            } else {
+                rt.block_on(picyomi_core::audio::sentence(&db, sentence, e, r))?
+            };
+            println!("{} · {} · {} bytes · {:.0} ms · {}", a.source, a.mime, a.bytes.len(), t.elapsed().as_secs_f64() * 1000.0, a.path.display());
+            if let Some(out) = args.get(4) {
+                std::fs::write(out, &a.bytes)?;
+            }
+        }
         "import-anki" => {
             // import-anki <collection.anki2> [deck]
             let path = args.get(1).context("usage: import-anki <collection.anki2> [deck]")?;

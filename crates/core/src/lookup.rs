@@ -308,6 +308,38 @@ pub fn sentence_at(text: &str, offset: usize) -> (String, usize) {
     (chars[start..end].iter().collect(), offset - start)
 }
 
+/// Byte range of `word` in `sentence`, also when it appears inflected
+/// (催す in 催していた): the kanji stem plus the kana right after it.
+pub fn word_span(sentence: &str, word: &str) -> Option<std::ops::Range<usize>> {
+    if word.is_empty() {
+        return None;
+    }
+    if let Some(a) = sentence.find(word) {
+        return Some(a..a + word.len());
+    }
+    let is_kana = |c: char| ('\u{3041}'..='\u{309f}').contains(&c);
+    let stem: String = {
+        let mut chars: Vec<char> = word.chars().collect();
+        while chars.len() > 1 && chars.last().is_some_and(|c| is_kana(*c)) {
+            chars.pop();
+        }
+        chars.into_iter().collect()
+    };
+    if stem == word || stem.is_empty() {
+        return None;
+    }
+    let a = sentence.find(&stem)?;
+    let mut end = a + stem.len();
+    let okurigana = word.chars().count() - stem.chars().count();
+    for c in sentence[end..].chars().take(okurigana.max(1)) {
+        if !is_kana(c) {
+            break;
+        }
+        end += c.len_utf8();
+    }
+    Some(a..end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

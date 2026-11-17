@@ -16,7 +16,7 @@ use crate::panel::{explanation_view, ruby_line};
 use crate::ui;
 use crate::state::{DEVICE_ID, rt, svc};
 
-actions!(review, [Reveal, Again, Hard, Good, Easy]);
+actions!(review, [Reveal, Again, Hard, Good, Easy, Replay]);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -26,6 +26,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("2", Hard, Some("Review")),
         KeyBinding::new("3", Good, Some("Review")),
         KeyBinding::new("4", Easy, Some("Review")),
+        KeyBinding::new("r", Replay, Some("Review")),
     ]);
 }
 
@@ -110,6 +111,13 @@ impl ReviewView {
         .detach();
     }
 
+    /// R: play the word again (answer side only, the front would give the reading away).
+    fn replay(&mut self, _: &Replay, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(card) = self.current().filter(|_| self.revealed) {
+            crate::sound::play_word(&card.expression, &card.reading, cx);
+        }
+    }
+
     fn reveal(&mut self, _: &Reveal, _: &mut Window, cx: &mut Context<Self>) {
         if self.current().is_none() {
             return;
@@ -120,6 +128,11 @@ impl ReviewView {
             return;
         }
         self.revealed = true;
+        if let Some(card) = self.current() {
+            if crate::scan::setting_on(picyomi_core::audio::AUTOPLAY, true, cx) {
+                crate::sound::play_word(&card.expression, &card.reading, cx);
+            }
+        }
         self.ensure_explanation(cx);
         cx.notify();
     }
@@ -213,10 +226,25 @@ impl ReviewView {
                             .gap_3()
                             .items_center()
                             .child(div().text_xl().text_color(theme.muted_foreground).child(card.reading.clone()))
+                            .child({
+                                let (ex, rd) = (card.expression.clone(), card.reading.clone());
+                                crate::sound::button("say-word", "发音（R）", move |cx| crate::sound::play_word(&ex, &rd, cx))
+                            })
                             .when_some(card.frequency.clone(), |d, f| d.child(div().text_xs().text_color(theme.muted_foreground).child(format!("频率 {f}")))),
                     ),
             )
-            .when(!card.sentence_furigana.is_empty(), |d| d.child(h_flex().w_full().justify_center().child(ruby_line(&card.sentence_furigana, hl, cx))))
+            .when(!card.sentence_furigana.is_empty(), |d| {
+                let (s, ex, rd) = (card.sentence.clone(), card.expression.clone(), card.reading.clone());
+                d.child(
+                    h_flex()
+                        .w_full()
+                        .justify_center()
+                        .items_end()
+                        .gap_1()
+                        .child(ruby_line(&card.sentence_furigana, hl, cx))
+                        .child(crate::sound::button("say-sentence", "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx))),
+                )
+            })
             .when_some(self.image.clone(), |d, img| d.child(h_flex().w_full().justify_center().child(img_view(img))));
         for d in &card.definitions {
             back = back.child(
@@ -243,37 +271,7 @@ impl ReviewView {
     }
 }
 
-/// Byte range of `word` in `sentence`, also when it appears inflected
-/// (催す in 催していた): the kanji stem plus the kana right after it.
-pub fn word_span(sentence: &str, word: &str) -> Option<std::ops::Range<usize>> {
-    if word.is_empty() {
-        return None;
-    }
-    if let Some(a) = sentence.find(word) {
-        return Some(a..a + word.len());
-    }
-    let is_kana = |c: char| ('\u{3041}'..='\u{309f}').contains(&c);
-    let stem: String = {
-        let mut chars: Vec<char> = word.chars().collect();
-        while chars.len() > 1 && chars.last().is_some_and(|c| is_kana(*c)) {
-            chars.pop();
-        }
-        chars.into_iter().collect()
-    };
-    if stem == word || stem.is_empty() {
-        return None;
-    }
-    let a = sentence.find(&stem)?;
-    let mut end = a + stem.len();
-    let okurigana = word.chars().count() - stem.chars().count();
-    for c in sentence[end..].chars().take(okurigana.max(1)) {
-        if !is_kana(c) {
-            break;
-        }
-        end += c.len_utf8();
-    }
-    Some(a..end)
-}
+pub use picyomi_core::lookup::word_span;
 
 /// The context sentence with the card's word in bold.
 fn sentence_with_word(sentence: &str, word: &str, cx: &App) -> impl IntoElement {
@@ -395,8 +393,8 @@ impl Render for ReviewView {
                 };
                 let hint = match (self.revealed, self.four_buttons) {
                     (false, _) => "空格 显示答案",
-                    (true, false) => "1 忘了 · 空格 记得 —— 读音和意思都想对了才算记得",
-                    (true, true) => "1 重来 · 2 困难 · 3 良好 · 4 简单 · 空格 良好",
+                    (true, false) => "1 忘了 · 空格 记得 · R 再听一遍 —— 读音和意思都想对了才算记得",
+                    (true, true) => "1 重来 · 2 困难 · 3 良好 · 4 简单 · 空格 良好 · R 再听一遍",
                 };
                 v_flex()
                     .size_full()
@@ -428,6 +426,7 @@ impl Render for ReviewView {
             .key_context("Review")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::reveal))
+            .on_action(cx.listener(Self::replay))
             .on_action(cx.listener(|this, _: &Again, _, cx| this.rate(1, cx)))
             .on_action(cx.listener(|this, _: &Hard, _, cx| this.rate(if this.four_buttons { 2 } else { 3 }, cx)))
             .on_action(cx.listener(|this, _: &Good, _, cx| this.rate(3, cx)))

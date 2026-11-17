@@ -274,6 +274,11 @@
     .defs { font-size: 13px; }
     .defs ul, .defs ol { margin: 2px 0; padding-left: 18px; }
     .defs a { color: #3b5bdb; cursor: pointer; text-decoration: none; }
+    .say { border: 0; background: transparent; color: inherit; opacity: .6; cursor: pointer; padding: 2px; line-height: 0; border-radius: 5px; align-self: center; }
+    .say:hover { opacity: 1; background: rgba(127,127,127,.15); }
+    .say.busy { opacity: .3; }
+    .say svg { width: 16px; height: 16px; }
+    .row { display: flex; gap: 6px; align-items: center; }
     .add { margin-left: auto; border: 0; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; background: #3b5bdb; color: #fff; }
     .add[disabled] { background: #9aa3b8; cursor: default; }
     ruby rt { font-size: 9px; }
@@ -330,6 +335,64 @@
     parent.appendChild(e);
   }
 
+  // ---------------------------------------------------------------- pronunciation
+  // Web Audio, not <audio>: a decoded buffer needs no URL, so page CSP can't block it.
+  let audioCtx = null, playing = null;
+  const clips = new Map();
+
+  function speakerIcon() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    for (const d of ['M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z', 'M16 9a5 5 0 0 1 0 6', 'M19.4 18.4a9 9 0 0 0 0-12.8']) {
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      svg.append(p);
+    }
+    return svg;
+  }
+
+  async function play(req, btn) {
+    const key = `${req.s || ''}|${req.e}|${req.r}`;
+    btn?.classList.add('busy');
+    try {
+      audioCtx = audioCtx || new AudioContext();
+      if (audioCtx.state === 'suspended') await audioCtx.resume();
+      let buf = clips.get(key);
+      if (!buf) {
+        const a = await send('audio', req);
+        const bin = atob(a.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        buf = await audioCtx.decodeAudioData(bytes.buffer);
+        clips.set(key, buf);
+      }
+      if (playing) try { playing.stop(); } catch (_) {}
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(audioCtx.destination);
+      src.start();
+      playing = src;
+    } catch (err) {
+      status(`发音失败：${err.message}`, 3000);
+    } finally {
+      btn?.classList.remove('busy');
+    }
+  }
+
+  function sayButton(title, req) {
+    const b = el('button', 'say');
+    b.title = title;
+    b.append(speakerIcon());
+    b.addEventListener('click', (ev) => { ev.stopPropagation(); play(req, b); });
+    return b;
+  }
+
   function renderPopup(state) {
     ensurePopup();
     popup.replaceChildren();
@@ -339,7 +402,7 @@
     const freq = (e.frequencies || []).map((f) => f.display).filter(Boolean).join(' · ');
 
     const head = el('div', 'head');
-    head.append(el('span', 'word', e.expression), el('span', 'muted', e.reading));
+    head.append(el('span', 'word', e.expression), el('span', 'muted', e.reading), sayButton('发音', { e: e.expression, r: e.reading }));
     if (freq) head.append(el('span', 'muted', `频率 ${freq}`));
     if (e.reasons && e.reasons.length) head.append(el('span', 'muted', e.reasons.join(' ← ')));
     const saved = res.saved && res.saved[sel];
@@ -365,11 +428,17 @@
     popup.append(defs);
 
     // Chinese explanation only on request; adding to the word list generates one for the card.
+    const sentenceSay = state.sentence && state.sentence.trim() !== e.expression
+      ? sayButton('朗读整句', { s: state.sentence, e: e.expression, r: e.reading }) : null;
     if (state.zh === undefined) {
+      const row = el('div', 'row');
       const ask = el('button', 'ask', '中文解释');
       ask.addEventListener('click', () => explain(state));
-      popup.append(ask);
+      row.append(ask);
+      if (sentenceSay) row.append(sentenceSay);
+      popup.append(row);
     } else {
+      if (sentenceSay) { const row = el('div', 'row'); row.append(el('span', 'muted', '整句'), sentenceSay); popup.append(row); }
       const zh = el('div', 'zh');
       if (state.zh === null) zh.textContent = '中文解释生成中…';
       else if (state.zh.error) zh.textContent = `中文解释不可用：${state.zh.error}`;

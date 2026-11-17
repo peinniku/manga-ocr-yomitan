@@ -78,7 +78,28 @@ async function fetchImage(src) {
   throw new Error('无法下载图片');
 }
 
+/** Pronunciation clip as base64 (message passing is JSON in Chrome). */
+async function audio({ e = '', r = '', s = '' }, retry = true) {
+  const t = await loadToken();
+  const q = new URLSearchParams({ e, r, s });
+  let res;
+  try {
+    res = await fetch(`${API}/api/audio?${q}`, { headers: { Authorization: `Bearer ${t}` } });
+  } catch (_) {
+    throw new Error('pic_yomi 桌面程序没有运行');
+  }
+  if (res.status === 401 && retry) {
+    token = null;
+    await api.storage.local.remove('token');
+    await pair();
+    return audio({ e, r, s }, false);
+  }
+  if (!res.ok) throw new Error(`没有找到发音（${res.status}）`);
+  return { mime: res.headers.get('content-type') || 'audio/mpeg', data: toBase64(await res.arrayBuffer()), source: res.headers.get('x-audio-source') };
+}
+
 const handlers = {
+  audio,
   async ocr({ src, dataUrl }) {
     if (dataUrl) return { key: src, page: await call('/api/ocr', { method: 'POST', body: { image: dataUrl, key: src } }) };
     const img = await fetchImage(src);

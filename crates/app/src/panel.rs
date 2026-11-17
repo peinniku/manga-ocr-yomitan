@@ -389,7 +389,16 @@ impl Render for LookupPanel {
         let mut root = v_flex().size_full().min_h_0().gap_3();
 
         if let Some(r) = self.response.as_ref().filter(|_| self.show_sentence) {
-            root = root.child(sentence_view(&self.sentence, self.offset, r.result.match_length, cx));
+            let target = r.result.entries.get(self.selected).map(|e| (e.expression.clone(), e.reading.clone())).unwrap_or_default();
+            let sentence = self.sentence.clone();
+            root = root.child(
+                h_flex()
+                    .flex_none()
+                    .gap_1()
+                    .items_start()
+                    .child(div().flex_1().min_w_0().child(sentence_view(&self.sentence, self.offset, r.result.match_length, cx)))
+                    .child(crate::sound::button("say-sentence", "朗读整句", move |cx| crate::sound::play_sentence(&sentence, &target.0, &target.1, cx))),
+            );
         } else if self.busy {
             root = root.child(div().text_color(theme.muted_foreground).child("查词中…"));
         }
@@ -429,6 +438,10 @@ impl Render for LookupPanel {
                             .items_baseline()
                             .child(div().text_2xl().font_weight(FontWeight::BOLD).child(e.expression.clone()))
                             .child(div().text_color(theme.muted_foreground).child(e.reading.clone()))
+                            .child({
+                                let (ex, rd) = (e.expression.clone(), e.reading.clone());
+                                crate::sound::button("say-word", "发音", move |cx| crate::sound::play_word(&ex, &rd, cx))
+                            })
                             .when(!freq.is_empty(), |d| d.child(div().text_xs().text_color(theme.muted_foreground).child(format!("频率 {freq}"))))
                             .when(!e.reasons.is_empty(), |d| d.child(div().text_xs().text_color(theme.muted_foreground).child(e.reasons.join(" ← ")))),
                     )

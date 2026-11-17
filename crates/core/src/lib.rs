@@ -10,6 +10,7 @@ pub mod ocr;
 pub mod tokenize;
 pub mod vision;
 pub mod anki;
+pub mod audio;
 pub mod cards;
 pub mod explain;
 pub mod server;

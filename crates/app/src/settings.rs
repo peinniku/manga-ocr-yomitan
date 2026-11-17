@@ -9,6 +9,7 @@ use gpui_kit::component::{ActiveTheme, Disableable, IconName, Sizable, h_flex, v
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use picyomi_core::dict::{self, DictInfo};
+use picyomi_core::audio::{self, TtsConfig};
 use picyomi_core::explain::LlmConfig;
 use picyomi_core::models;
 
@@ -21,6 +22,8 @@ pub struct SettingsView {
     api_key: Entity<InputState>,
     retention: Entity<InputState>,
     new_per_day: Entity<InputState>,
+    azure_key: Entity<InputState>,
+    azure_region: Entity<InputState>,
     status: Option<String>,
     busy: bool,
     model_progress: Option<String>,
@@ -39,7 +42,11 @@ impl SettingsView {
         let service = svc(cx);
         let llm = LlmConfig::load(&service.db).unwrap_or_default();
         let sched = service.scheduler();
+        let tts = TtsConfig::load(&service.db).unwrap_or_default();
+        let key_hint = if tts.azure_key.is_empty() { "Azure 语音 key".to_string() } else { "已保存（留空则不改）".to_string() };
         let mut this = Self {
+            azure_key: input(window, cx, &key_hint, String::new()),
+            azure_region: input(window, cx, "japaneast", tts.azure_region.clone()),
             dicts: dict::list(&service.db).unwrap_or_default(),
             base_url: input(window, cx, "https://api.deepseek.com", llm.base_url.clone()),
             model: input(window, cx, "deepseek-flash", llm.model.clone()),
@@ -110,6 +117,32 @@ impl SettingsView {
             Err(e) => format!("保存失败：{e:#}"),
         });
         cx.notify();
+    }
+
+    fn save_tts(&mut self, voice: Option<&str>, cx: &mut Context<Self>) -> bool {
+        let service = svc(cx);
+        let mut cfg = TtsConfig::load(&service.db).unwrap_or_default();
+        let key = self.azure_key.read(cx).value().trim().to_string();
+        if !key.is_empty() {
+            cfg.azure_key = key;
+        }
+        cfg.azure_region = self.azure_region.read(cx).value().trim().to_string();
+        if let Some(v) = voice {
+            cfg.voice = v.to_string();
+        }
+        let res = cfg.save(&service.db);
+        self.status = Some(match &res {
+            Ok(()) => "已保存发音设置".into(),
+            Err(e) => format!("保存失败：{e:#}"),
+        });
+        cx.notify();
+        res.is_ok()
+    }
+
+    fn try_voice(&mut self, voice: Option<&str>, cx: &mut Context<Self>) {
+        if self.save_tts(voice, cx) {
+            crate::sound::play_sentence(VOICE_SAMPLE, "", "", cx);
+        }
     }
 
     fn test_llm(&mut self, cx: &mut Context<Self>) {
@@ -246,6 +279,7 @@ fn section(title: &str, description: &str, cx: &App) -> Div {
 }
 
 const SERVE_CMD: &str = "tailscale serve --bg 7331";
+const VOICE_SAMPLE: &str = "こーなったらご主人さまと根くらべよ！";
 
 /// Small 「复制」 button that puts `text` on the clipboard.
 fn copy_button(id: &'static str, text: String, cx: &mut Context<SettingsView>) -> Button {
@@ -315,6 +349,45 @@ impl Render for SettingsView {
                     .child(Button::new("save-llm").small().primary().label("保存").on_click(cx.listener(|this, _, _, cx| this.save_llm(cx))))
                     .child(Button::new("test-llm").small().label("测试").on_click(cx.listener(|this, _, _, cx| this.test_llm(cx)))),
             );
+
+        let tts = TtsConfig::load(&svc(cx).db).unwrap_or_default();
+        let mut voices = h_flex().flex_wrap().gap_1();
+        for (i, (id, label)) in audio::VOICES.iter().enumerate() {
+            voices = voices.child(
+                Button::new(("voice", i))
+                    .xsmall()
+                    .label(*label)
+                    .when(tts.voice == *id, |b| b.primary())
+                    .when(tts.voice != *id, |b| b.outline())
+                    .on_click(cx.listener(move |this, _, _, cx| this.try_voice(Some(id), cx))),
+            );
+        }
+        let speech = section(
+            "发音",
+            "单词优先用真人录音（JapanesePod101，没有再找 Lingua Libre）。查不到录音的词和整句朗读用 Azure 神经语音；同形异读的词（如「上手」）按词典读音念。没填 key 时用 macOS 自带的 Kyoko。音频缓存在本机。",
+            cx,
+        )
+        .child(field("Azure Key", Input::new(&self.azure_key).small().mask_toggle()))
+        .child(field("区域", h_flex().gap_2().child(div().w(px(140.)).child(Input::new(&self.azure_region).small())).child(div().text_xs().text_color(muted).child("创建语音资源时选的区域，如 japaneast"))))
+        .child(field("声音", voices))
+        .child(
+            h_flex()
+                .gap_2()
+                .pl(px(100.))
+                .child(Button::new("save-tts").small().primary().label("保存").on_click(cx.listener(|this, _, _, cx| {
+                    this.save_tts(None, cx);
+                })))
+                .child(Button::new("try-tts").small().icon(crate::sound::speaker_icon()).label("试听").on_click(cx.listener(|this, _, _, cx| this.try_voice(None, cx)))),
+        )
+        .child(toggle(
+            Switch::new("autoplay").checked(tts.autoplay).on_change(cx.listener(|_, on: &bool, _, cx| {
+                let _ = svc(cx).db.set_setting(audio::AUTOPLAY, Some(if *on { "1" } else { "0" }));
+                cx.notify();
+            })),
+            "复习翻面时自动播放",
+            "看答案时念一遍单词；按 R 再听一遍。手机端同样生效。",
+            cx,
+        ));
 
         let srs = section("复习", "FSRS 记忆曲线排程。", cx)
             .child(field("目标记忆率", h_flex().gap_2().child(div().w(px(90.)).child(Input::new(&self.retention).small())).child(div().text_xs().text_color(muted).child("0.7–0.99，越高复习越频繁"))))
@@ -412,7 +485,7 @@ impl Render for SettingsView {
             .children(banner)
             .child(div().flex_1().min_h_0().child(crate::ui::scroll(
                 "settings-scroll",
-                crate::ui::column(crate::ui::READ_WIDTH).gap_4().child(dicts).child(llm).child(keys).child(srs).child(ocr).child(phone),
+                crate::ui::column(crate::ui::READ_WIDTH).gap_4().child(dicts).child(llm).child(speech).child(keys).child(srs).child(ocr).child(phone),
             )));
         crate::ui::page(crate::ui::header("设置", div(), cx), body)
     }

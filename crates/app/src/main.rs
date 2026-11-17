@@ -10,6 +10,7 @@ mod review;
 mod scan;
 mod screen;
 mod settings;
+mod sound;
 mod state;
 mod ui;
 mod words;
@@ -147,7 +148,7 @@ fn main() -> anyhow::Result<()> {
     // Keep the runtime alive for the whole process.
     let _runtime = Box::leak(Box::new(runtime));
 
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+    gpui_kit::application().with_assets(sound::AppAssets).run(move |cx| {
         gpui_kit::init(cx);
         cx.set_global(AppState { svc: svc.clone(), rt: rt.clone() });
         review::bind_keys(cx);

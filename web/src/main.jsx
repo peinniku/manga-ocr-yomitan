@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 
 import { Glossary, Ruby } from './glossary.jsx';
+import { play, prefetchAudio } from './audio.js';
 import { loadSrs, preview, replay } from './srs.js';
 import { addReview, kv, resetAll } from './store.js';
 import { NotPaired, deviceId, ensurePaired, localState, mediaUrl, pairWith, standalone, sync } from './sync.js';
@@ -25,7 +26,7 @@ function buildQueue(cards, byCard, settings, now) {
   const due = items.filter((i) => i.schedule.phase !== 'new' && i.schedule.due <= now).sort((a, b) => a.schedule.due - b.schedule.due);
   const fresh = items.filter((i) => i.schedule.phase === 'new').sort((a, b) => a.card.created_at - b.card.created_at).slice(0, limit);
   const reviewedToday = [...byCard.values()].flat().filter((l) => l.reviewed_at >= start).length;
-  return { items, queue: [...due, ...fresh], config, reviewedToday, fourButtons: !!settings?.four_buttons };
+  return { items, queue: [...due, ...fresh], config, reviewedToday, fourButtons: !!settings?.four_buttons, autoplay: settings?.audio_autoplay !== false };
 }
 
 function useData() {
@@ -36,7 +37,10 @@ function useData() {
   const reload = useCallback(async () => {
     const { cards, byCard } = await localState();
     const settings = await kv.get('srs_settings');
-    setData({ ...buildQueue(cards, byCard, settings, Date.now()), byCard });
+    const built = buildQueue(cards, byCard, settings, Date.now());
+    setData({ ...built, byCard });
+    // Today's cards get their audio ahead of time, for offline review.
+    prefetchAudio(built.queue.map((i) => i.card)).catch(() => {});
   }, []);
 
   const doSync = useCallback(async () => {
@@ -129,6 +133,28 @@ function highlightOf(card) {
   return toRange(j, len);
 }
 
+/** Speaker button; doesn't flip the card it sits on. */
+function Say({ req, title }) {
+  return (
+    <button
+      class="say"
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        play(req);
+      }}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M11 4.7a.7.7 0 0 0-1.2-.5L6.4 7.6A1.4 1.4 0 0 1 5.4 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4a1.4 1.4 0 0 1 1 .4l3.4 3.4a.7.7 0 0 0 1.2-.5z" />
+        <path d="M16 9a5 5 0 0 1 0 6" />
+        <path d="M19.4 18.4a9 9 0 0 0 0-12.8" />
+      </svg>
+    </button>
+  );
+}
+
 function Review({ data, reload, doSync }) {
   const [revealed, setRevealed] = useState(false);
   const [shownAt, setShownAt] = useState(Date.now());
@@ -138,6 +164,13 @@ function Review({ data, reload, doSync }) {
     setRevealed(false);
     setShownAt(Date.now());
   }, [item?.card.id]);
+
+  const sayWord = () => item && play({ e: item.card.expression, r: item.card.reading });
+  const reveal = () => {
+    if (revealed) return;
+    setRevealed(true);
+    if (data.autoplay) sayWord();
+  };
 
   const labels = useMemo(() => (item && revealed ? preview(item.schedule, Date.now(), data.config).labels : null), [item, revealed, data.config]);
 
@@ -162,7 +195,9 @@ function Review({ data, reload, doSync }) {
         e.preventDefault();
         // On the answer side, space means "remembered".
         if (revealed) rate(3);
-        else setRevealed(true);
+        else reveal();
+      } else if (revealed && (e.key === 'r' || e.key === 'R')) {
+        sayWord();
       } else if (revealed && ['1', '2', '3', '4'].includes(e.key)) {
         const r = Number(e.key);
         rate(data.fourButtons || r === 1 ? r : 3);
@@ -183,11 +218,24 @@ function Review({ data, reload, doSync }) {
   const c = item.card;
   return (
     <div class="review">
-      <article class="card" onClick={() => setRevealed(true)}>
+      <article class="card" onClick={reveal}>
         <h1 class="word">{c.expression}</h1>
-        {revealed && <p class="reading">{c.reading}{c.frequency && <span class="muted"> · 频率 {c.frequency}</span>}</p>}
+        {revealed && (
+          <p class="reading">
+            {c.reading}
+            <Say title="发音（R）" req={{ e: c.expression, r: c.reading }} />
+            {c.frequency && <span class="muted"> · 频率 {c.frequency}</span>}
+          </p>
+        )}
         {c.sentence &&
-          (revealed && c.sentence_furigana?.length ? <Ruby segments={c.sentence_furigana} highlight={highlightOf(c)} /> : <p class="sentence">{c.sentence}</p>)}
+          (revealed ? (
+            <div class="said">
+              {c.sentence_furigana?.length ? <Ruby segments={c.sentence_furigana} highlight={highlightOf(c)} /> : <p class="sentence">{c.sentence}</p>}
+              <Say title="朗读例句" req={{ s: c.sentence, e: c.expression, r: c.reading }} />
+            </div>
+          ) : (
+            <p class="sentence">{c.sentence}</p>
+          ))}
         <Picture id={c.media_id} />
         {revealed && (
           <>
@@ -225,7 +273,7 @@ function Review({ data, reload, doSync }) {
             </button>
           ))
         ) : (
-          <button class="reveal" onClick={() => setRevealed(true)}>
+          <button class="reveal" onClick={reveal}>
             显示答案
           </button>
         )}
@@ -257,7 +305,16 @@ function Words({ data }) {
             </button>
             {open === c.id && (
               <div class="detail">
-                {c.sentence_furigana?.length > 0 && <Ruby segments={c.sentence_furigana} highlight={highlightOf(c)} />}
+                <p class="reading">
+                  {c.reading}
+                  <Say title="发音" req={{ e: c.expression, r: c.reading }} />
+                </p>
+                {c.sentence_furigana?.length > 0 && (
+                  <div class="said">
+                    <Ruby segments={c.sentence_furigana} highlight={highlightOf(c)} />
+                    <Say title="朗读例句" req={{ s: c.sentence, e: c.expression, r: c.reading }} />
+                  </div>
+                )}
                 <Explanation e={c.explanation} />
                 <p class="muted small">复习 {s.reps} 次 · 遗忘 {s.lapses} 次</p>
               </div>

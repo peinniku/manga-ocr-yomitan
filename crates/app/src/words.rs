@@ -74,10 +74,26 @@ impl WordsView {
         let id = c.card.id.clone();
         let confirming = self.confirm_delete.as_deref() == Some(id.as_str());
         let mut detail = v_flex().gap_4().mx_3().mb_2().p_4().rounded_lg().border_1().border_color(theme.border).bg(theme.background);
+        let (ex, rd) = (c.card.expression.clone(), c.card.reading.clone());
+        detail = detail.child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child(ex.clone()))
+                .child(div().text_color(theme.muted_foreground).child(rd.clone()))
+                .child(crate::sound::button(SharedString::from(format!("say-{id}")), "发音", move |cx| crate::sound::play_word(&ex, &rd, cx))),
+        );
         if !c.card.sentence_furigana.is_empty() {
             let hl = crate::review::word_span(&c.card.sentence, &c.card.expression)
                 .map(|r| (c.card.sentence[..r.start].chars().count(), c.card.sentence[..r.end].chars().count()));
-            detail = detail.child(ruby_line(&c.card.sentence_furigana, hl, cx));
+            let (s, ex, rd) = (c.card.sentence.clone(), c.card.expression.clone(), c.card.reading.clone());
+            detail = detail.child(
+                h_flex()
+                    .gap_1()
+                    .items_end()
+                    .child(div().min_w_0().child(ruby_line(&c.card.sentence_furigana, hl, cx)))
+                    .child(crate::sound::button(SharedString::from(format!("say-s-{id}")), "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx))),
+            );
         }
         for d in &c.card.definitions {
             detail = detail.child(

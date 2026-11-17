@@ -82,6 +82,14 @@ CREATE TABLE IF NOT EXISTS review_logs (
 CREATE INDEX IF NOT EXISTS review_logs_seq ON review_logs(seq);
 CREATE INDEX IF NOT EXISTS review_logs_card ON review_logs(card_id);
 
+CREATE TABLE IF NOT EXISTS audio_cache (
+    key TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    created_at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY,
     mime TEXT NOT NULL,
