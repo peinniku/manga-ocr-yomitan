@@ -165,6 +165,17 @@ impl LookupPanel {
                 // Ignore late results for an entry that is no longer selected.
                 let still = this.response.as_ref().and_then(|r| r.result.entries.get(this.selected)).map(|e| e.id) == Some(entry.id);
                 if still {
+                    // The model read the sentence and chose another reading: show that entry.
+                    if let Ok(Ok(e)) = &res {
+                        let other = this.response.as_ref().and_then(|r| {
+                            r.result.entries.iter().position(|x| {
+                                !e.reading.is_empty() && x.expression == entry.expression && picyomi_core::kana::kata_to_hira(&x.reading) == e.reading
+                            })
+                        });
+                        if let Some(j) = other {
+                            this.selected = j;
+                        }
+                    }
                     this.zh = match res {
                         Ok(Ok(e)) => ZhState::Done(e),
                         Ok(Err(e)) => ZhState::Failed(format!("{e:#}")),
@@ -321,36 +332,128 @@ pub fn sentence_view(sentence: &str, offset: usize, len: usize, cx: &App) -> Div
     div().flex_none().text_base().line_height(relative(1.6)).child(text)
 }
 
+/// Character range of `word` in the furigana text. Counted on the segments
+/// themselves, not the card's sentence: older cards' furigana lost the
+/// sentence's spaces, which shifted the highlight.
+pub fn ruby_highlight(segments: &[Ruby], word: &str, reading: &str) -> Option<(usize, usize)> {
+    let text: String = segments.iter().map(|s| s.t.as_str()).collect();
+    picyomi_core::lookup::find_word(&text, word, reading).map(|r| (text[..r.start].chars().count(), text[..r.end].chars().count()))
+}
+
+/// Rough rendered width of `s` at `size` px: full-width characters are square.
+fn text_width(s: &str, size: f32) -> f32 {
+    s.chars().map(|c| if c.is_ascii() { size * 0.55 } else { size }).sum()
+}
+
+const RUBY_BASE: f32 = 18.; // text_lg
+const RUBY_READING: f32 = 10.;
+
 /// Furigana sentence; segments overlapping [hl_start, hl_end) are highlighted.
 ///
-/// Readings float above their base text (they don't widen it), so the sentence
-/// keeps normal spacing; a long reading may overhang its neighbours a little.
+/// Readings float above their base text; when a reading is wider than its
+/// base (にんたい over 忍耐), the segment gets side padding so neighbouring
+/// readings never run into each other.
 pub fn ruby_line(segments: &[Ruby], hl: Option<(usize, usize)>, cx: &App) -> Div {
+    ruby_line_mode(segments, hl, RubyMode::Shown, cx)
+}
+
+/// How a ruby line shows its readings.
+#[derive(Clone, Copy)]
+pub enum RubyMode {
+    Shown,
+    /// Laid out but invisible (card front): turning the card changes nothing but the readings.
+    Hidden,
+    /// Fade in; `u64` keys the animation so it plays once per card.
+    FadeIn(u64),
+}
+
+/// Fade in and rise a few pixels; plays once per `id`.
+pub fn reveal<E: Styled + IntoElement + 'static>(el: E, id: impl Into<ElementId>, delay_ms: u64, rise: f32) -> impl IntoElement {
+    let total = 320 + delay_ms;
+    let start = delay_ms as f32 / total as f32;
+    el.with_animation(id, Animation::new(std::time::Duration::from_millis(total)), move |el, t| {
+        let t = ((t - start) / (1. - start)).clamp(0., 1.);
+        let t = 1. - (1. - t).powi(4); // ease-out
+        el.opacity(t).relative().top(px(rise * (1. - t)))
+    })
+}
+
+pub fn ruby_line_mode(segments: &[Ruby], hl: Option<(usize, usize)>, mode: RubyMode, cx: &App) -> Div {
     let theme = cx.theme();
+    let style = HighlightStyle {
+        color: Some(theme.primary),
+        font_weight: Some(FontWeight::SEMIBOLD),
+        background_color: Some(theme.primary.opacity(0.12)),
+        ..Default::default()
+    };
+
+    // Plain text is laid out character by character so lines can break
+    // anywhere (as Japanese does), not only between segments; words with a
+    // reading stay whole.
+    struct Item {
+        t: String,
+        r: Option<String>,
+        start: usize,
+    }
+    let mut items: Vec<Item> = Vec::new();
+    let mut pos = 0;
+    for seg in segments {
+        match seg.r.clone().filter(|r| !r.is_empty()) {
+            Some(r) => items.push(Item { t: seg.t.clone(), r: Some(r), start: pos }),
+            None => items.extend(seg.t.chars().enumerate().map(|(k, c)| Item { t: c.to_string(), r: None, start: pos + k })),
+        }
+        pos += seg.t.chars().count();
+    }
+
+    // Kinsoku: closing punctuation and small kana never start a line, opening
+    // brackets never end one; such characters stick to their neighbour.
+    const NO_START: &str = "。、，．・：；！？!?)）」』】〉》〕ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ…‥";
+    const NO_END: &str = "（(「『【〈《〔";
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut glue_next = false;
+    for (k, it) in items.iter().enumerate() {
+        let first = it.t.chars().next().unwrap_or(' ');
+        let joins_prev = it.r.is_none() && NO_START.contains(first);
+        match groups.last_mut() {
+            Some(g) if glue_next || joins_prev => g.push(k),
+            _ => groups.push(vec![k]),
+        }
+        glue_next = it.r.is_none() && NO_END.contains(first);
+    }
+
     let mut row = h_flex().flex_wrap().items_end().gap_y_1();
-    let mut pos = 0usize;
-    for (i, seg) in segments.iter().enumerate() {
-        let len = seg.t.chars().count();
-        // Highlight exactly the characters of [a, b) that fall in this segment.
-        let range = hl.and_then(|(a, b)| {
-            let (from, to) = (a.max(pos) - pos, b.min(pos + len).saturating_sub(pos));
-            (from < to).then(|| {
-                let byte = |n: usize| seg.t.char_indices().nth(n).map(|(i, _)| i).unwrap_or(seg.t.len());
-                byte(from)..byte(to)
-            })
-        });
-        pos += len;
-        let style = HighlightStyle {
-            color: Some(theme.primary),
-            font_weight: Some(FontWeight::SEMIBOLD),
-            background_color: Some(theme.primary.opacity(0.12)),
-            ..Default::default()
-        };
-        let base = div().text_lg().child(StyledText::new(seg.t.clone()).with_highlights(range.map(|r| (r, style))));
-        let mut cell = div().id(("ruby", i)).relative().pt(px(13.));
-        if let Some(r) = seg.r.clone().filter(|r| !r.is_empty()) {
-            cell = cell.child(
-                h_flex()
+    for group in groups {
+        let mut unit = h_flex().flex_none().items_end();
+        for k in group {
+            let it = &items[k];
+            let len = it.t.chars().count();
+            // Highlight exactly the characters of [a, b) that fall in this item.
+            let range = hl.and_then(|(a, b)| {
+                let (from, to) = (a.max(it.start) - it.start, b.min(it.start + len).saturating_sub(it.start));
+                (from < to).then(|| {
+                    let byte = |n: usize| it.t.char_indices().nth(n).map(|(i, _)| i).unwrap_or(it.t.len());
+                    byte(from)..byte(to)
+                })
+            });
+            let base = div().text_lg().child(StyledText::new(it.t.clone()).with_highlights(range.map(|r| (r, style))));
+            let mut cell = div().id(("ruby", k)).relative().pt(px(13.));
+            if let Some(r) = it.r.clone() {
+                // A long reading may overhang plain neighbours a little (as in
+                // printed ruby); the word is only widened beyond that.
+                let room = |n: Option<&Item>| match n {
+                    Some(n) if n.r.is_none() => RUBY_READING,
+                    _ => 0.,
+                };
+                let half = (text_width(&r, RUBY_READING) - text_width(&it.t, RUBY_BASE)) / 2.;
+                let left = (half - room(k.checked_sub(1).and_then(|p| items.get(p)))).max(0.);
+                let right = (half - room(items.get(k + 1))).max(0.);
+                if left > 0. {
+                    cell = cell.pl(px(left + 1.));
+                }
+                if right > 0. {
+                    cell = cell.pr(px(right + 1.));
+                }
+                let reading = h_flex()
                     .absolute()
                     .top_0()
                     .left(px(-24.))
@@ -360,10 +463,20 @@ pub fn ruby_line(segments: &[Ruby], hl: Option<(usize, usize)>, cx: &App) -> Div
                     .line_height(px(13.))
                     .text_color(theme.muted_foreground)
                     .whitespace_nowrap()
-                    .child(r),
-            );
+                    .child(r);
+                cell = match mode {
+                    RubyMode::Shown => cell.child(reading),
+                    RubyMode::Hidden => cell.child(reading.opacity(0.)),
+                    RubyMode::FadeIn(key) => cell.child(reading.with_animation(
+                        ElementId::NamedInteger(format!("ruby-{key}").into(), k as u64),
+                        Animation::new(std::time::Duration::from_millis(360)),
+                        |el, t| el.opacity(1. - (1. - t).powi(3)),
+                    )),
+                };
+            }
+            unit = unit.child(cell.child(base));
         }
-        row = row.child(cell.child(base));
+        row = row.child(unit);
     }
     row
 }

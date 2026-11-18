@@ -143,6 +143,104 @@ fn main() -> Result<()> {
                 std::fs::write(out, &a.bytes)?;
             }
         }
+        "set-reading" => {
+            // set-reading <expression> <new reading>: fix a card saved with the wrong reading
+            let (e, r) = (args.get(1).context("usage: set-reading <expression> <reading>")?, args.get(2).context("usage: set-reading <expression> <reading>")?);
+            let svc = picyomi_core::service::Service::open()?;
+            let ids: Vec<String> = {
+                let c = svc.db.lock();
+                let mut st = c.prepare("SELECT id FROM cards WHERE deleted=0 AND json_extract(data, '$.expression')=?1")?;
+                st.query_map([e], |r| r.get(0))?.collect::<Result<_, _>>()?
+            };
+            let rt = tokio::runtime::Runtime::new()?;
+            for id in ids {
+                let card = svc.set_reading(&id, r)?;
+                let filled = rt.block_on(svc.fill_explanation(&id))?;
+                println!(
+                    "{}【{}】 {} · {}",
+                    card.expression,
+                    card.reading,
+                    card.frequency.unwrap_or_default(),
+                    filled.and_then(|c| c.explanation).map(|x| x.meaning_zh).unwrap_or_else(|| "(no explanation)".into())
+                );
+            }
+        }
+        "eval-lookup" => {
+            // eval-lookup: look each card's word up in its own sentence and check
+            // whether the first entry is the card's word and reading.
+            let svc = picyomi_core::service::Service::open()?;
+            let rows: Vec<String> = {
+                let c = svc.db.lock();
+                let mut st = c.prepare("SELECT data FROM cards WHERE deleted=0")?;
+                st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+            };
+            let (mut total, mut top1) = (0, 0);
+            for d in rows {
+                let card: picyomi_core::cards::Card = serde_json::from_str(&d)?;
+                let Some(span) = picyomi_core::lookup::find_word(&card.sentence, &card.expression, &card.reading) else { continue };
+                let offset = card.sentence[..span.start].chars().count();
+                let res = svc.lookup(&card.sentence, offset)?;
+                let want = picyomi_core::kana::kata_to_hira(&card.reading);
+                let pos = res.result.entries.iter().position(|e| e.expression == card.expression && picyomi_core::kana::kata_to_hira(&e.reading) == want);
+                total += 1;
+                if pos == Some(0) {
+                    top1 += 1;
+                } else {
+                    let first = res.result.entries.first().map(|e| format!("{}【{}】", e.expression, e.reading)).unwrap_or_default();
+                    println!("MISS {}【{}】 rank {:?} · first {} · {}", card.expression, card.reading, pos.map(|p| p + 1), first, card.sentence.chars().take(36).collect::<String>());
+                }
+            }
+            println!("top-1 {top1}/{total} = {:.1}%", 100.0 * top1 as f64 / total as f64);
+        }
+        "check-readings" => {
+            // check-readings: let the LLM pick each ambiguous card's reading from its sentence
+            let svc = picyomi_core::service::Service::open()?;
+            let ids: Vec<(String, String)> = {
+                let c = svc.db.lock();
+                let mut st = c.prepare("SELECT id, json_extract(data, '$.expression') FROM cards WHERE deleted=0")?;
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?
+            };
+            let rt = tokio::runtime::Runtime::new()?;
+            let (mut checked, mut changed) = (0, 0);
+            for (id, expression) in ids {
+                if picyomi_core::explain::readings_of(&svc.db, &expression).len() < 2 {
+                    continue;
+                }
+                checked += 1;
+                match rt.block_on(svc.recheck_reading(&id)) {
+                    Ok(Some(old)) => {
+                        changed += 1;
+                        let card = picyomi_core::cards::get_card(&svc.db, &id)?.context("card")?;
+                        println!("CHANGED {expression}: {old} → {} · {}", card.reading, card.sentence.chars().take(30).collect::<String>());
+                    }
+                    Ok(None) => {}
+                    Err(e) => println!("ERROR {expression}: {e:#}"),
+                }
+            }
+            println!("checked {checked}, changed {changed}");
+        }
+        "highlights" => {
+            // highlights: show which part of each card's sentence gets bolded (dry run)
+            let db = picyomi_core::Db::open_default()?;
+            let rows: Vec<String> = {
+                let c = db.lock();
+                let mut st = c.prepare("SELECT data FROM cards WHERE deleted=0")?;
+                st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?
+            };
+            for d in rows {
+                let card: picyomi_core::cards::Card = serde_json::from_str(&d)?;
+                let text: String = if card.sentence_furigana.is_empty() { card.sentence.clone() } else { card.sentence_furigana.iter().map(|s| s.t.as_str()).collect() };
+                let show = |h: Option<[usize; 2]>| h.map(|[a, b]| text.chars().skip(a).take(b - a).collect::<String>()).unwrap_or_else(|| "—".into());
+                let ruby: String = card
+                    .compute_furigana()
+                    .iter()
+                    .filter(|r| r.r.is_some())
+                    .filter(|r| show(card.compute_highlight()).contains(r.t.as_str()))
+                    .map(|r| format!("{}【{}】", r.t, r.r.clone().unwrap_or_default()))
+                    .collect();
+                println!("{}【{}】\t{}\t{}", card.expression, card.reading, show(card.compute_highlight()), ruby);
+            }
+        }
         "import-anki" => {
             // import-anki <collection.anki2> [deck]
             let path = args.get(1).context("usage: import-anki <collection.anki2> [deck]")?;

@@ -110,7 +110,10 @@ const isKana = (c) => c >= '\u3041' && c <= '\u309f';
 
 /** Character range of the card's word in its sentence, also when inflected (催す in 催していた). */
 function highlightOf(card) {
-  const { sentence, expression } = card;
+  if (card.highlight) return card.highlight; // computed on the Mac, inflections included
+  const { expression } = card;
+  // Count on the furigana text itself: older cards' furigana lost the sentence's spaces.
+  const sentence = card.sentence_furigana?.length ? card.sentence_furigana.map((s) => s.t).join('') : card.sentence;
   if (!sentence || !expression) return null;
   const toRange = (i, len) => {
     const s = [...sentence.slice(0, i)].length;
@@ -131,6 +134,23 @@ function highlightOf(card) {
     len++;
   }
   return toRange(j, len);
+}
+
+const KANJI = /[\u3400-\u4dbf\u4e00-\u9fff々]/;
+
+/** Furigana for the front: the word blanked out when the sentence spells it
+ *  in kana (たるんでる for 弛む), which would give the reading away. */
+function frontSegments(card, hl) {
+  const segs = card.sentence_furigana || [];
+  if (!hl || !KANJI.test(card.expression)) return segs;
+  const text = segs.map((s) => s.t).join('');
+  if (KANJI.test([...text].slice(hl[0], hl[1]).join(''))) return segs;
+  let pos = 0;
+  return segs.map((s) => {
+    const t = [...s.t].map((ch, i) => (pos + i >= hl[0] && pos + i < hl[1] ? '＿' : ch)).join('');
+    pos += [...s.t].length;
+    return { ...s, t };
+  });
 }
 
 /** Speaker button; doesn't flip the card it sits on. */
@@ -218,27 +238,28 @@ function Review({ data, reload, doSync }) {
   const c = item.card;
   return (
     <div class="review">
-      <article class="card" onClick={reveal}>
+      {/* One layout for both sides: the reading and the furigana are laid out
+          but hidden on the front, so turning the card only fades them in. */}
+      <article key={c.id} class={`card${revealed ? ' revealed' : ''}`} onClick={reveal}>
         <h1 class="word">{c.expression}</h1>
-        {revealed && (
-          <p class="reading">
-            {c.reading}
-            <Say title="发音（R）" req={{ e: c.expression, r: c.reading }} />
-            {c.frequency && <span class="muted"> · 频率 {c.frequency}</span>}
-          </p>
+        <p class="reading">
+          {c.reading}
+          <Say title="发音（R）" req={{ e: c.expression, r: c.reading }} />
+          {c.frequency && <span class="muted"> · 频率 {c.frequency}</span>}
+        </p>
+        {c.sentence && (
+          <div class="said">
+            {c.sentence_furigana?.length ? (
+              <Ruby segments={revealed ? c.sentence_furigana : frontSegments(c, highlightOf(c))} highlight={highlightOf(c)} />
+            ) : (
+              <p class="sentence">{c.sentence}</p>
+            )}
+            <Say title="朗读例句" req={{ s: c.sentence, e: c.expression, r: c.reading }} />
+          </div>
         )}
-        {c.sentence &&
-          (revealed ? (
-            <div class="said">
-              {c.sentence_furigana?.length ? <Ruby segments={c.sentence_furigana} highlight={highlightOf(c)} /> : <p class="sentence">{c.sentence}</p>}
-              <Say title="朗读例句" req={{ s: c.sentence, e: c.expression, r: c.reading }} />
-            </div>
-          ) : (
-            <p class="sentence">{c.sentence}</p>
-          ))}
         <Picture id={c.media_id} />
         {revealed && (
-          <>
+          <div class="answer-body">
             {(c.definitions || []).map((d, i) => (
               <section class="defs" key={i}>
                 <p class="muted small">{d.dict}</p>
@@ -246,7 +267,7 @@ function Review({ data, reload, doSync }) {
               </section>
             ))}
             <Explanation e={c.explanation} />
-          </>
+          </div>
         )}
       </article>
       <div class={`answer${revealed && !data.fourButtons ? ' two' : ''}`}>

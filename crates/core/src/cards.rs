@@ -35,6 +35,10 @@ pub struct Explanation {
     pub sentence_zh: String,
     #[serde(default)]
     pub examples: Vec<Example>,
+    /// The word's reading in this sentence, when the model was asked to choose
+    /// between several (額: がく / ひたい). Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reading: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -60,6 +64,10 @@ pub struct Card {
     pub sentence: String,
     #[serde(default)]
     pub sentence_furigana: Vec<Ruby>,
+    /// Character range of the word in the furigana text (or the sentence),
+    /// inflected forms included. Filled on save; the phone has no deinflector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<[usize; 2]>,
     #[serde(default)]
     pub source_url: Option<String>,
     #[serde(default)]
@@ -89,6 +97,7 @@ impl Card {
             explanation: None,
             sentence: String::new(),
             sentence_furigana: vec![],
+            highlight: None,
             source_url: None,
             source_title: None,
             media_id: None,
@@ -109,7 +118,50 @@ pub struct CardWithSchedule {
     pub schedule: Schedule,
 }
 
+impl Card {
+    /// The sentence's furigana, with the card's own reading on its word.
+    pub fn compute_furigana(&self) -> Vec<Ruby> {
+        if self.sentence.is_empty() {
+            return vec![];
+        }
+        crate::tokenize::furigana_for_word(&self.sentence, &self.expression, &self.reading)
+    }
+
+    /// Where the word is in the sentence shown with furigana.
+    pub fn compute_highlight(&self) -> Option<[usize; 2]> {
+        let text: String = if self.sentence_furigana.is_empty() {
+            self.sentence.clone()
+        } else {
+            self.sentence_furigana.iter().map(|s| s.t.as_str()).collect()
+        };
+        crate::lookup::find_word(&text, &self.expression, &self.reading).map(|r| [text[..r.start].chars().count(), text[..r.end].chars().count()])
+    }
+}
+
+/// Cards saved before `highlight` existed (or with an older rule) get it now;
+/// re-saving them sends them to the phone on its next sync.
+pub fn backfill_highlights(db: &Db) -> Result<usize> {
+    let cards: Vec<Card> = {
+        let c = db.lock();
+        let mut st = c.prepare("SELECT data FROM cards WHERE deleted=0")?;
+        st.query_map([], |r| r.get::<_, String>(0))?.filter_map(|d| d.ok()).filter_map(|d| serde_json::from_str(&d).ok()).collect()
+    };
+    let mut n = 0;
+    for card in cards {
+        let furigana = card.compute_furigana();
+        if card.sentence_furigana != furigana || card.highlight != card.compute_highlight() {
+            save_card(db, &card)?;
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 fn upsert_card(c: &Connection, card: &Card) -> Result<()> {
+    let mut card = card.clone();
+    card.sentence_furigana = card.compute_furigana();
+    card.highlight = card.compute_highlight();
+    let card = &card;
     let seq = next_seq(c)?;
     c.execute(
         "INSERT INTO cards(id, data, updated_at, deleted, seq) VALUES(?1, ?2, ?3, ?4, ?5)

@@ -74,7 +74,7 @@
       const { key, page } = await send('ocr', payload);
       const n = page.blocks.length;
       attachOverlay(img, src, key, page);
-      status(n ? `识别到 ${n} 段文字 · 按住 Shift 指向文字查词` : '这张图里没有识别到日语文字');
+      status(n ? `识别到 ${n} 段文字` : '这张图里没有识别到日语文字');
     } catch (e) {
       status(`识别失败：${e.message}`, 4000);
     } finally {
@@ -475,7 +475,13 @@
     renderPopup(state);
     try {
       const z = await send('explain', { expression: e.expression, reading: e.reading, sentence: state.sentence, definition_hint: '' });
-      if (current === state) { state.zh = z; renderPopup(state); }
+      if (current === state) {
+        // The model read the sentence and chose another reading: show that entry.
+        const j = z.reading ? state.res.entries.findIndex((x) => x.expression === e.expression && x.reading === z.reading) : -1;
+        if (j >= 0) state.sel = j;
+        state.zh = z;
+        renderPopup(state);
+      }
     } catch (err) {
       if (current === state) {
         // Not configured: hide silently; other failures are shown.
@@ -499,7 +505,7 @@
       });
       state.res.saved[state.sel] = card.id;
       renderPopup(state);
-      status(card.explanation ? `已加入词单：${card.expression}` : `已加入词单：${card.expression}（中文解释在后台生成）`);
+      status(`已加入词单：${card.expression}`);
     } catch (err) {
       btn.disabled = false;
       btn.textContent = '＋ 加入词单';

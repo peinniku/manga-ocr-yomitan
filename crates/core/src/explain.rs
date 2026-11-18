@@ -65,9 +65,29 @@ gloss_zh: 这个词的常见义项，用；分隔，最多 4 个；\
 sentence_zh: 整句的自然中文翻译（没有句子时为空字符串）；\
 examples: 2 个简短常用的日语例句，每个为 {\"ja\": 例句, \"zh\": 中文翻译}。";
 
-fn cache_key(r: &ExplainRequest, model: &str) -> String {
+/// Every reading the enabled dictionaries give for a word written with kanji
+/// (皺 → しわ, しぼ). Fewer than two means there is nothing to choose.
+pub fn readings_of(db: &Db, expression: &str) -> Vec<String> {
+    if !crate::kana::has_kanji(expression) {
+        return vec![];
+    }
+    let c = db.lock();
+    let Ok(mut st) = c.prepare_cached(
+        "SELECT DISTINCT t.reading FROM terms t JOIN dictionaries d ON d.id = t.dict_id
+         WHERE d.enabled = 1 AND t.expression = ?1 AND t.reading <> '' ORDER BY t.reading",
+    ) else {
+        return vec![];
+    };
+    let rows = st.query_map([expression], |r| r.get::<_, String>(0));
+    let mut out: Vec<String> = rows.map(|r| r.filter_map(|x| x.ok()).map(|x| crate::kana::kata_to_hira(&x)).collect()).unwrap_or_default();
+    out.dedup();
+    out
+}
+
+fn cache_key(r: &ExplainRequest, model: &str, readings: &[String]) -> String {
     let mut h = Sha256::new();
-    for part in [model, &r.expression, &r.reading, &r.sentence] {
+    let readings = readings.join("/");
+    for part in [model, &r.expression, &r.reading, &r.sentence, &readings] {
         h.update(part.as_bytes());
         h.update([0]);
     }
@@ -76,7 +96,7 @@ fn cache_key(r: &ExplainRequest, model: &str) -> String {
 
 pub fn cached(db: &Db, r: &ExplainRequest) -> Result<Option<Explanation>> {
     let cfg = LlmConfig::load(db)?;
-    let key = cache_key(r, &cfg.model);
+    let key = cache_key(r, &cfg.model, &readings_of(db, &r.expression));
     let v: Option<String> = db.lock().query_row("SELECT value FROM explain_cache WHERE key=?1", [key], |row| row.get(0)).optional()?;
     Ok(v.and_then(|s| serde_json::from_str(&s).ok()))
 }
@@ -104,7 +124,7 @@ fn to_explanation(v: &serde_json::Value) -> Explanation {
                 .collect()
         })
         .unwrap_or_default();
-    Explanation { meaning_zh: s("meaning_zh"), gloss_zh: s("gloss_zh"), sentence_zh: s("sentence_zh"), examples }
+    Explanation { meaning_zh: s("meaning_zh"), gloss_zh: s("gloss_zh"), sentence_zh: s("sentence_zh"), examples, reading: crate::kana::kata_to_hira(&s("reading")) }
 }
 
 pub async fn explain(db: &Db, r: &ExplainRequest) -> Result<Explanation> {
@@ -115,22 +135,33 @@ pub async fn explain(db: &Db, r: &ExplainRequest) -> Result<Explanation> {
     if let Some(hit) = cached(db, r)? {
         return Ok(hit);
     }
-    let user = format!(
+    let readings = readings_of(db, &r.expression);
+    let choose = readings.len() > 1 && !r.sentence.is_empty();
+    let mut user = format!(
         "单词：{}（{}）\n句子：{}\n日日词典释义（参考）：{}",
         r.expression,
         r.reading,
         if r.sentence.is_empty() { "（无）" } else { &r.sentence },
         r.definition_hint.chars().take(300).collect::<String>()
     );
-    let content = complete(&cfg, SYSTEM, &user).await?;
+    let mut system = SYSTEM.to_string();
+    if choose {
+        // The reading above is only the lookup's first guess.
+        user.push_str(&format!("\n这个写法有几种读音：{}。上面括号里的读音只是猜测，请根据句子判断。", readings.join("、")));
+        system.push_str("另加字段 reading: 这个词在本句中的读音（平假名，必须是给出的读音之一），其余字段按这个读音来解释。");
+    }
+    let content = complete(&cfg, &system, &user).await?;
     let content = content.as_str();
-    let parsed = extract_json(content).map(|j| to_explanation(&j)).unwrap_or_else(|| Explanation {
+    let mut parsed = extract_json(content).map(|j| to_explanation(&j)).unwrap_or_else(|| Explanation {
         meaning_zh: content.trim().to_string(),
         ..Default::default()
     });
+    if !choose || !readings.contains(&parsed.reading) {
+        parsed.reading.clear();
+    }
     db.lock().execute(
         "INSERT OR REPLACE INTO explain_cache(key, value, created_at) VALUES(?1, ?2, strftime('%s','now'))",
-        params![cache_key(r, &cfg.model), serde_json::to_string(&parsed)?],
+        params![cache_key(r, &cfg.model, &readings), serde_json::to_string(&parsed)?],
     )?;
     Ok(parsed)
 }

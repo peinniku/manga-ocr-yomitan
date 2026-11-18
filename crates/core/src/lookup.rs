@@ -198,7 +198,8 @@ pub fn lookup(db: &Db, text: &str, offset: usize, tokenizer_bases: &[(usize, Str
     }
 
     let chars: Vec<char> = text.chars().collect();
-    let mut entries: Vec<(Entry, bool)> = Vec::with_capacity(found.len());
+    // (entry, matched its written form, deinflection steps incl. tokenizer guesses)
+    let mut entries: Vec<(Entry, bool, usize)> = Vec::with_capacity(found.len());
     for (i, (len, expr_match, _, c)) in found {
         let row = &rows[i];
         let d = &dicts[&row.dict_id];
@@ -220,23 +221,29 @@ pub fn lookup(db: &Db, text: &str, offset: usize, tokenizer_bases: &[(usize, Str
                 frequencies: frequencies(db, &dicts, &row.expression, &row.reading)?,
             },
             expr_match,
+            c.reasons.len(),
         ));
     }
 
     let rank = |e: &Entry| e.frequencies.iter().filter_map(|f| f.value).fold(1e12, f64::min);
-    // Longest source first; then dictionary priority; then the more common word
-    // (行った → 行く before 行う); then expression matches; then fewer inflection steps.
-    entries.sort_by(|(a, am), (b, bm)| {
+    let affix = |e: &Entry| e.def_tags.split_whitespace().any(|t| t == "造");
+    // Longest source first, then dictionary priority. Among words that fit the
+    // same text: the one needing fewer conjugation steps (嗜み before 嗜む,
+    // 宿した → 宿す before 宿＋した), a written-form match before a reading
+    // match, real words before kanji/affix entries (催す before 催), and only
+    // then the more common word (行った → 行く before 行う).
+    entries.sort_by(|(a, am, asteps), (b, bm, bsteps)| {
         b.source_length
             .cmp(&a.source_length)
             .then(a.dict_priority.cmp(&b.dict_priority))
-            .then(rank(a).total_cmp(&rank(b)))
+            .then(asteps.cmp(bsteps))
             .then(bm.cmp(am))
-            .then(a.reasons.len().cmp(&b.reasons.len()))
+            .then(affix(a).cmp(&affix(b)))
+            .then(rank(a).total_cmp(&rank(b)))
             .then(b.score.total_cmp(&a.score))
             .then(a.id.cmp(&b.id))
     });
-    let entries = merge_same_word(entries.into_iter().map(|(e, _)| e).collect());
+    let entries = merge_same_word(entries.into_iter().map(|(e, _, _)| e).collect());
     let entries: Vec<Entry> = entries.into_iter().take(MAX_ENTRIES).collect();
     let match_length = entries.first().map(|e| e.source_length).unwrap_or(0);
     Ok(LookupResult { entries, match_length })
@@ -308,8 +315,16 @@ pub fn sentence_at(text: &str, offset: usize) -> (String, usize) {
     (chars[start..end].iter().collect(), offset - start)
 }
 
-/// Byte range of `word` in `sentence`, also when it appears inflected
-/// (催す in 催していた): the kanji stem plus the kana right after it.
+/// `word_span` for a card's word, also when the sentence spells it in kana
+/// (うなだれる for 項垂れる).
+pub fn find_word(text: &str, expression: &str, reading: &str) -> Option<std::ops::Range<usize>> {
+    let hira = crate::kana::kata_to_hira(reading);
+    word_span(text, expression).or_else(|| word_span(text, &hira)).or_else(|| word_span(text, &crate::kana::hira_to_kata(&hira)))
+}
+
+/// Byte range of `word` in `sentence`, also when it appears inflected:
+/// the longest stretch from its kanji stem that deinflects to the word
+/// (喫したい → 喫する, 催していた → 催す), like the lookup popup highlights it.
 pub fn word_span(sentence: &str, word: &str) -> Option<std::ops::Range<usize>> {
     if word.is_empty() {
         return None;
@@ -328,16 +343,29 @@ pub fn word_span(sentence: &str, word: &str) -> Option<std::ops::Range<usize>> {
     if stem == word || stem.is_empty() {
         return None;
     }
-    let a = sentence.find(&stem)?;
-    let mut end = a + stem.len();
-    let okurigana = word.chars().count() - stem.chars().count();
-    for c in sentence[end..].chars().take(okurigana.max(1)) {
-        if !is_kana(c) {
-            break;
+    let mut fallback = None;
+    for (a, _) in sentence.match_indices(stem.as_str()) {
+        let after = a + stem.len();
+        let ends: Vec<usize> = sentence[after..].char_indices().take(12).map(|(i, c)| after + i + c.len_utf8()).collect();
+        for &end in ends.iter().rev() {
+            if deinflect(&sentence[a..end]).iter().any(|c| c.term == word) {
+                return Some(a..end);
+            }
         }
-        end += c.len_utf8();
+        // Not a known inflection: the kanji stem plus as many kana as the word has.
+        if fallback.is_none() && crate::kana::has_kanji(&stem) {
+            let mut end = after;
+            let okurigana = word.chars().count() - stem.chars().count();
+            for c in sentence[after..].chars().take(okurigana.max(1)) {
+                if !is_kana(c) {
+                    break;
+                }
+                end += c.len_utf8();
+            }
+            fallback = Some(a..end);
+        }
     }
-    Some(a..end)
+    fallback
 }
 
 #[cfg(test)]
@@ -405,6 +433,35 @@ mod tests {
         let (s, o) = sentence_at(t, 2);
         assert_eq!(s, "Isla · 4時間");
         assert_eq!(o, 2);
+    }
+
+    #[test]
+    fn fewer_steps_and_real_words_rank_first() {
+        let db = fixture();
+        db.lock()
+            .execute_batch(
+                r#"
+                INSERT INTO terms(dict_id, expression, reading, def_tags, rules, score, glossary) VALUES
+                  (1, '嗜み', 'たしなみ', '', '', 0, '["taste"]'),
+                  (1, '嗜む', 'たしなむ', '', 'v5', 0, '["enjoy"]'),
+                  (1, '宿', 'やど', '', '', 0, '["inn"]'),
+                  (1, '宿す', 'やどす', '', 'v5', 0, '["harbor"]'),
+                  (1, '催', 'さい', '造', '', 0, '["host (kanji)"]'),
+                  (1, '催す', 'もよおす', '', 'v5', 0, '["feel"]');
+                INSERT INTO term_meta(dict_id, term, mode, reading, value, display) VALUES
+                  (2, '嗜む', 'freq', 'たしなむ', 100, '100'),
+                  (2, '嗜み', 'freq', 'たしなみ', 900, '900'),
+                  (2, '宿', 'freq', 'やど', 50, '50'),
+                  (2, '催', 'freq', 'さい', 10, '10');
+                "#,
+            )
+            .unwrap();
+        // The noun needs no conjugation, even though the verb is more common.
+        assert_eq!(lookup(&db, "嗜みよ", 0, &[]).unwrap().entries[0].expression, "嗜み");
+        // 宿した is the past of 宿す, not 宿 + した.
+        assert_eq!(lookup(&db, "宿した", 0, &[]).unwrap().entries[0].expression, "宿す");
+        // A kanji/affix entry never comes before the word.
+        assert_eq!(lookup(&db, "催していた", 0, &[]).unwrap().entries[0].expression, "催す");
     }
 
     #[test]

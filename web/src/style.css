@@ -63,16 +63,18 @@ nav button.on { color: var(--accent); font-weight: 600; }
 .word { font-size: 40px; margin: 8px 0 4px; text-align: center; letter-spacing: 0.02em; }
 .reading { text-align: center; font-size: 18px; color: var(--muted); }
 .sentence { text-align: center; font-size: 18px; color: var(--muted); margin-top: 16px; }
+.front-word { color: var(--fg); }
 .ruby-line { font-size: 19px; line-height: 2.1; margin: 14px 0; }
 .say { border: 0; background: transparent; color: var(--muted); padding: 6px; margin: -6px 0 -6px 2px; border-radius: 8px; vertical-align: middle; line-height: 0; cursor: pointer; -webkit-tap-highlight-color: transparent; }
 .say svg { width: 20px; height: 20px; }
 .say:active { background: var(--line); color: var(--accent); }
-.said { display: flex; align-items: flex-end; justify-content: center; gap: 2px; }
-.said .ruby-line, .said .sentence { margin-bottom: 14px; }
-.said .say { margin-bottom: 18px; flex: none; }
 .detail .reading { text-align: left; font-size: 15px; margin: 4px 0; }
-.detail .said { justify-content: flex-start; }
 .ruby-line rt { font-size: 10px; color: var(--muted); }
+.ruby-line ruby { ruby-align: center; }
+/* Japanese line breaking (no ー or 。 at a line start), and long readings may
+   overhang their neighbours a little instead of spreading the sentence. */
+.ruby-line { line-break: strict; }
+.ruby-line rt { margin-inline: -0.3em; }
 .ruby-line mark { background: var(--mark); color: inherit; border-radius: 3px; }
 .pic { display: block; max-width: 100%; max-height: 260px; margin: 14px auto 0; border-radius: 10px; }
 .zh { background: var(--bg); border-radius: 10px; padding: 10px 12px; margin: 14px 0; font-size: 15px; }
@@ -118,3 +120,27 @@ nav button.on { color: var(--accent); font-weight: 600; }
 .pair .row { display: flex; gap: 8px; }
 .pair .row input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); font-size: 16px; }
 .pair .error { color: var(--again); }
+
+/* Turning a card: nothing moves; the hidden parts fade in. */
+.card .reading { min-height: 1.6em; }
+.card:not(.revealed) .reading,
+.card:not(.revealed) .say { visibility: hidden; }
+.card .ruby-line rt { transition: opacity 0.35s ease-out; }
+.card:not(.revealed) .ruby-line rt { opacity: 0; }
+.card.revealed .reading { animation: rise 0.32s ease-out both; }
+.card .answer-body { animation: rise 0.38s 0.06s ease-out both; }
+.card .answer-body .zh { animation: rise 0.38s 0.12s ease-out both; }
+.answer .rate { animation: rise 0.28s ease-out both; }
+@keyframes rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .card *, .answer .rate { animation: none !important; transition: none !important; }
+}
+
+/* The speaker follows the sentence's last character. */
+.said { text-align: center; margin: 14px 0; line-height: 2.1; }
+.said .ruby-line, .said .sentence { display: inline; margin: 0; }
+.said .say { display: inline-block; vertical-align: -4px; margin: 0 0 0 2px; }
+.detail .said { text-align: left; }

@@ -138,6 +138,14 @@ fn main() -> anyhow::Result<()> {
     let svc = Service::open()?;
     {
         let svc = svc.clone();
+        std::thread::spawn(move || match picyomi_core::audio::migrate(&svc.db).and_then(|_| picyomi_core::cards::backfill_highlights(&svc.db)) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("updated the word highlight on {n} cards"),
+            Err(e) => eprintln!("highlight backfill: {e:#}"),
+        });
+    }
+    {
+        let svc = svc.clone();
         runtime.spawn(async move {
             if let Err(e) = picyomi_core::server::serve(svc, picyomi_core::server::DEFAULT_PORT).await {
                 eprintln!("local API not started: {e:#}");

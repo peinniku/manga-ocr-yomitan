@@ -218,6 +218,11 @@ impl Service {
         card.source_url = req.source_url.clone();
         card.source_title = req.source_title.clone();
         card.explanation = req.explanation.clone();
+        if self.apply_context_reading(&mut card)? {
+            if let Some(existing) = cards::find_card(&self.db, &card.expression, &card.reading)? {
+                return Ok(existing);
+            }
+        }
         if let Some(b64) = &req.image_b64 {
             use base64::Engine;
             let data = b64.split_once(',').map(|(_, d)| d).unwrap_or(b64);
@@ -254,7 +259,69 @@ impl Service {
             return Ok(None);
         }
         card.explanation = Some(explanation);
+        self.apply_context_reading(&mut card)?;
         Ok(Some(self.update_card(card)?))
+    }
+
+    /// Ask the model which reading the card's sentence uses (only for words
+    /// written several ways); switch the card when it differs. Returns the old
+    /// reading when the card changed.
+    pub async fn recheck_reading(&self, card_id: &str) -> Result<Option<String>> {
+        let Some(card) = cards::get_card(&self.db, card_id)? else { return Ok(None) };
+        if card.deleted || card.sentence.is_empty() || crate::explain::readings_of(&self.db, &card.expression).len() < 2 {
+            return Ok(None);
+        }
+        let req = crate::explain::ExplainRequest {
+            expression: card.expression.clone(),
+            reading: card.reading.clone(),
+            sentence: card.sentence.clone(),
+            definition_hint: String::new(),
+        };
+        let explanation = crate::explain::explain(&self.db, &req).await?;
+        let Some(mut card) = cards::get_card(&self.db, card_id)? else { return Ok(None) };
+        let old = card.reading.clone();
+        if explanation.reading.is_empty() || explanation.reading == crate::kana::kata_to_hira(&old) {
+            return Ok(None);
+        }
+        card.explanation = Some(explanation);
+        self.apply_context_reading(&mut card)?;
+        self.update_card(card)?;
+        Ok(Some(old))
+    }
+
+    /// When the explanation chose another reading for this sentence (額に汗 →
+    /// ひたい, not がく), switch the card to it. Returns whether it changed.
+    fn apply_context_reading(&self, card: &mut Card) -> Result<bool> {
+        let Some(r) = card.explanation.as_ref().map(|e| e.reading.clone()).filter(|r| !r.is_empty()) else { return Ok(false) };
+        if r == crate::kana::kata_to_hira(&card.reading) {
+            return Ok(false);
+        }
+        let (definitions, frequency) = self.definitions(&card.expression, &r)?;
+        if !definitions.is_empty() {
+            card.definitions = definitions;
+        }
+        card.frequency = frequency;
+        card.reading = r;
+        Ok(true)
+    }
+
+    /// Give a card another reading of the same word (皺: しぼ → しわ): definitions
+    /// and frequency follow the new reading; the Chinese explanation is redone.
+    /// Review history is kept.
+    pub fn set_reading(&self, card_id: &str, reading: &str) -> Result<Card> {
+        let mut card = cards::get_card(&self.db, card_id)?.context("no such card")?;
+        let reading = crate::kana::kata_to_hira(reading.trim());
+        if reading.is_empty() {
+            bail!("empty reading");
+        }
+        let (definitions, frequency) = self.definitions(&card.expression, &reading)?;
+        if !definitions.is_empty() {
+            card.definitions = definitions;
+        }
+        card.frequency = frequency;
+        card.reading = reading;
+        card.explanation = None;
+        self.update_card(card)
     }
 
     pub fn update_card(&self, mut card: Card) -> Result<Card> {

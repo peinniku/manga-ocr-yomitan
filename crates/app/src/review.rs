@@ -12,7 +12,7 @@ use picyomi_core::explain::{ExplainRequest, LlmConfig};
 use picyomi_core::service::QueueItem;
 
 use crate::glossary;
-use crate::panel::{explanation_view, ruby_line};
+use crate::panel::explanation_view;
 use crate::ui;
 use crate::state::{DEVICE_ID, rt, svc};
 
@@ -194,96 +194,118 @@ impl ReviewView {
         cx.notify();
     }
 
-    fn render_front(&self, card: &Card, cx: &App) -> Div {
+    /// One layout for both sides, so turning the card moves nothing: the
+    /// reading row and the sentence's readings are laid out (invisible) on the
+    /// front and fade in on the back; the answer sections fade in below.
+    fn render_card(&self, card: &Card, cx: &App) -> Div {
         let theme = cx.theme();
-        v_flex()
-            .w_full()
-            .min_h_full()
-            .items_center()
-            .justify_center()
-            .gap_5()
-            .py_8()
-            .child(div().text_size(px(44.)).font_weight(FontWeight::BOLD).child(card.expression.clone()))
-            .when(!card.sentence.is_empty(), |d| d.child(sentence_with_word(&card.sentence, &card.expression, cx)))
-            .when_some(self.image.clone(), |d, img| d.child(img_view(img)))
-            .child(div().text_xs().text_color(theme.muted_foreground).child("想一想读音和意思，再看答案"))
-    }
+        let revealed = self.revealed;
+        let key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            card.id.hash(&mut h);
+            h.finish()
+        };
+        let anim = |name: &str| ElementId::NamedInteger(format!("{name}-{key}").into(), revealed as u64);
+        // Same box for the speaker buttons on both sides, empty on the front.
+        let slot = |b: Option<Button>| div().flex_none().size(px(24.)).flex().items_center().justify_center().children(b);
 
-    fn render_back(&self, card: &Card, cx: &App) -> Div {
-        let theme = cx.theme();
-        let hl = word_span(&card.sentence, &card.expression)
-            .map(|r| (card.sentence[..r.start].chars().count(), card.sentence[..r.end].chars().count()));
-        let mut back = v_flex()
+        let reading_row = h_flex()
+            .h(px(36.))
+            .gap_3()
+            .items_center()
+            .child(div().text_xl().text_color(theme.muted_foreground).child(card.reading.clone()))
+            .child(slot(Some({
+                let (ex, rd) = (card.expression.clone(), card.reading.clone());
+                crate::sound::button("say-word", "发音（R）", move |cx| crate::sound::play_word(&ex, &rd, cx))
+            })))
+            .when_some(card.frequency.clone(), |d, f| d.child(div().text_xs().text_color(theme.muted_foreground).child(format!("频率 {f}"))));
+        let reading_row: AnyElement =
+            if revealed { crate::panel::reveal(reading_row, anim("reading"), 0, 4.).into_any_element() } else { div().h(px(36.)).into_any_element() };
+
+        let hl = crate::panel::ruby_highlight(&card.sentence_furigana, &card.expression, &card.reading);
+        let sentence = (!card.sentence_furigana.is_empty()).then(|| {
+            let (segments, mode) = if revealed {
+                (card.sentence_furigana.clone(), crate::panel::RubyMode::FadeIn(key))
+            } else {
+                (front_segments(card, hl), crate::panel::RubyMode::Hidden)
+            };
+            let (s, ex, rd) = (card.sentence.clone(), card.expression.clone(), card.reading.clone());
+            // The speaker follows the last character, wherever the line ends.
+            crate::panel::ruby_line_mode(&segments, hl, mode, cx)
+                .w_full()
+                .justify_center()
+                .child(div().pl_1().child(slot(revealed.then(|| crate::sound::button("say-sentence", "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx))))))
+        });
+
+        let mut card_view = v_flex()
             .w_full()
             .gap_5()
+            .pt(px(28.))
+            .pb_6()
             .child(
                 v_flex()
                     .items_center()
                     .gap_1()
-                    .child(div().text_size(px(36.)).font_weight(FontWeight::BOLD).child(card.expression.clone()))
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .items_center()
-                            .child(div().text_xl().text_color(theme.muted_foreground).child(card.reading.clone()))
-                            .child({
-                                let (ex, rd) = (card.expression.clone(), card.reading.clone());
-                                crate::sound::button("say-word", "发音（R）", move |cx| crate::sound::play_word(&ex, &rd, cx))
-                            })
-                            .when_some(card.frequency.clone(), |d, f| d.child(div().text_xs().text_color(theme.muted_foreground).child(format!("频率 {f}")))),
-                    ),
+                    .child(div().text_size(px(40.)).font_weight(FontWeight::BOLD).child(card.expression.clone()))
+                    .child(reading_row),
             )
-            .when(!card.sentence_furigana.is_empty(), |d| {
-                let (s, ex, rd) = (card.sentence.clone(), card.expression.clone(), card.reading.clone());
-                d.child(
-                    h_flex()
-                        .w_full()
-                        .justify_center()
-                        .items_end()
-                        .gap_1()
-                        .child(ruby_line(&card.sentence_furigana, hl, cx))
-                        .child(crate::sound::button("say-sentence", "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx))),
-                )
-            })
+            .children(sentence)
             .when_some(self.image.clone(), |d, img| d.child(h_flex().w_full().justify_center().child(img_view(img))));
+        if !revealed {
+            return card_view;
+        }
+
+        let mut answer = v_flex().w_full().gap_5();
         for d in &card.definitions {
-            back = back.child(
+            answer = answer.child(
                 v_flex()
                     .gap_2()
                     .child(div().text_xs().text_color(theme.muted_foreground).child(d.dict.clone()))
                     .child(glossary::view(&d.glossary, None, cx)),
             );
         }
+        card_view = card_view.child(crate::panel::reveal(answer, anim("answer"), 60, 10.));
         if let Some(e) = &card.explanation {
-            back = back.child(
+            // Its own animation: it may arrive after the card was turned.
+            card_view = card_view.child(crate::panel::reveal(
                 v_flex()
+                    .w_full()
                     .gap_1()
                     .p_4()
                     .rounded_lg()
                     .bg(theme.secondary)
                     .child(div().text_xs().text_color(theme.muted_foreground).child("中文解释"))
                     .child(explanation_view(e, cx)),
-            );
+                anim("zh"),
+                120,
+                10.,
+            ));
         } else if self.explaining {
-            back = back.child(div().text_sm().text_color(theme.muted_foreground).child("中文解释生成中…"));
+            card_view = card_view.child(div().text_sm().text_color(theme.muted_foreground).child("中文解释生成中…"));
         }
-        back
+        card_view
     }
 }
 
-pub use picyomi_core::lookup::word_span;
-
-/// The context sentence with the card's word in bold.
-fn sentence_with_word(sentence: &str, word: &str, cx: &App) -> impl IntoElement {
-    let theme = cx.theme();
-    let mut text = StyledText::new(sentence.to_string());
-    if let Some(r) = word_span(sentence, word) {
-        text = text.with_highlights([(
-            r,
-            HighlightStyle { color: Some(theme.foreground), font_weight: Some(FontWeight::BOLD), ..Default::default() },
-        )]);
+/// The front's segments: the word blanked out when the sentence spells it in
+/// kana (たるんでる for 弛む), which would give the reading away.
+fn front_segments(card: &Card, hl: Option<(usize, usize)>) -> Vec<picyomi_core::tokenize::Ruby> {
+    let Some((a, b)) = hl else { return card.sentence_furigana.clone() };
+    let text: String = card.sentence_furigana.iter().map(|s| s.t.as_str()).collect();
+    let word: String = text.chars().skip(a).take(b - a).collect();
+    if !picyomi_core::kana::has_kanji(&card.expression) || picyomi_core::kana::has_kanji(&word) {
+        return card.sentence_furigana.clone();
     }
-    div().max_w(px(640.)).text_lg().text_center().text_color(theme.muted_foreground).line_height(relative(1.6)).child(text)
+    let mut pos = 0;
+    card.sentence_furigana
+        .iter()
+        .map(|seg| {
+            let t: String = seg.t.chars().enumerate().map(|(i, c)| if (a..b).contains(&(pos + i)) { '＿' } else { c }).collect();
+            pos += seg.t.chars().count();
+            picyomi_core::tokenize::Ruby { t, r: seg.r.clone() }
+        })
+        .collect()
 }
 
 fn img_view(image: Arc<Image>) -> impl IntoElement {
@@ -325,25 +347,25 @@ impl Render for ReviewView {
             None => ui::empty_state("今天的复习完成了 🎉", "新的复习到期后会出现在这里。", cx).into_any_element(),
             Some(item) => {
                 let card = &item.card.card;
-                let content = if self.revealed { self.render_back(card, cx) } else { self.render_front(card, cx) };
+                let content = self.render_card(card, cx);
                 let bar: AnyElement = if self.revealed && !self.four_buttons {
                     // Default: just "forgot" / "remembered" — the only judgement FSRS really needs.
                     let labels = item.preview_labels.clone();
-                    let mk = |id: &'static str, key: &'static str, name: &'static str, note: &'static str, interval: String, rating: u8| {
+                    let mk = |id: &'static str, key: &'static str, name: &'static str, interval: String, rating: u8| {
                         v_flex()
                             .flex_1()
                             .min_w(px(130.))
                             .max_w(px(220.))
                             .gap_1()
                             .items_center()
-                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{interval}后再见")))
+                            .child(div().text_xs().text_color(theme.muted_foreground).child(format!("{interval}后")))
                             .child(
                                 Button::new(id)
                                     .w_full()
                                     .label(name)
                                     .when(rating == 3, |b| b.primary())
                                     .when(rating == 1, |b| b.danger())
-                                    .tooltip(format!("{note}（快捷键 {key}）"))
+                                    .tooltip(format!("快捷键 {key}"))
                                     .on_click(cx.listener(move |this, _, _, cx| this.rate(rating, cx))),
                             )
                     };
@@ -351,8 +373,8 @@ impl Render for ReviewView {
                         .w_full()
                         .justify_center()
                         .gap_3()
-                        .child(mk("forgot", "1", "忘了", "读音或意思没想起来，或想错了", labels[0].clone(), 1))
-                        .child(mk("remembered", "空格", "记得", "读音和意思都想对了，慢一点也算", labels[2].clone(), 3))
+                        .child(mk("forgot", "1", "忘了", labels[0].clone(), 1))
+                        .child(mk("remembered", "空格", "记得", labels[2].clone(), 3))
                         .into_any_element()
                 } else if self.revealed {
                     let labels = item.preview_labels.clone();
@@ -393,8 +415,8 @@ impl Render for ReviewView {
                 };
                 let hint = match (self.revealed, self.four_buttons) {
                     (false, _) => "空格 显示答案",
-                    (true, false) => "1 忘了 · 空格 记得 · R 再听一遍 —— 读音和意思都想对了才算记得",
-                    (true, true) => "1 重来 · 2 困难 · 3 良好 · 4 简单 · 空格 良好 · R 再听一遍",
+                    (true, false) => "1 忘了 · 空格 记得 · R 发音",
+                    (true, true) => "1 重来 · 2 困难 · 3 良好 · 4 简单 · R 发音",
                 };
                 v_flex()
                     .size_full()
@@ -414,7 +436,11 @@ impl Render for ReviewView {
                             .pb_4()
                             .border_t_1()
                             .border_color(theme.border)
-                            .child(bar)
+                            .child(if self.revealed {
+                                crate::panel::reveal(div().w_full().child(bar), ElementId::Name(format!("bar-{}", card.id).into()), 0, 6.).into_any_element()
+                            } else {
+                                bar
+                            })
                             .child(div().text_center().text_xs().text_color(theme.muted_foreground).child(hint)),
                     )
                     .into_any_element()
@@ -438,13 +464,40 @@ impl Render for ReviewView {
 
 #[cfg(test)]
 mod tests {
-    use super::word_span;
+    use picyomi_core::lookup::word_span;
 
     #[test]
     fn finds_inflected_words() {
         let s = "尿意を催していたため";
-        assert_eq!(word_span(s, "催す").map(|r| &s[r]), Some("催し"));
+        assert_eq!(word_span(s, "催す").map(|r| &s[r]), Some("催していた"));
+        let t = "日本は良いとこだ、ぜひ茶を喫したいものだなあ。";
+        assert_eq!(word_span(t, "喫する").map(|r| &t[r]), Some("喫したい"));
         assert_eq!(word_span(s, "尿意").map(|r| &s[r]), Some("尿意"));
         assert_eq!(word_span(s, "ため息"), None);
+    }
+
+    #[test]
+    fn front_hides_kana_spelling() {
+        let front = |sentence: &str, e: &str, r: &str| {
+            let mut c = picyomi_core::cards::Card::new(e, r);
+            c.sentence = sentence.into();
+            c.sentence_furigana = c.compute_furigana();
+            let hl = crate::panel::ruby_highlight(&c.sentence_furigana, e, r);
+            super::front_segments(&c, hl).iter().map(|s| s.t.clone()).collect::<String>()
+        };
+        assert_eq!(front("最近出撃してないから、たるんでるじゃないか?", "弛む", "たるむ"), "最近出撃してないから、＿＿＿＿＿じゃないか?");
+        assert_eq!(front("ぜひ茶を喫したいものだ", "喫する", "きっする"), "ぜひ茶を喫したいものだ");
+        assert_eq!(front("あっさり負けた", "あっさり", "あっさり"), "あっさり負けた");
+    }
+
+    #[test]
+    fn highlight_counts_on_furigana_text() {
+        use picyomi_core::tokenize::Ruby;
+        // Furigana saved before spaces were kept: 「試験内容試験室…」 (no space).
+        let segs: Vec<Ruby> = [("試験内容", None), ("試験室で", None), ("忍耐", Some("にんたい")), ("力", Some("りょく")), ("を", None)]
+            .into_iter()
+            .map(|(t, r)| Ruby { t: t.into(), r: r.map(Into::into) })
+            .collect();
+        assert_eq!(crate::panel::ruby_highlight(&segs, "忍耐", "にんたい"), Some((8, 10)));
     }
 }

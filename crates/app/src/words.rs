@@ -84,15 +84,11 @@ impl WordsView {
                 .child(crate::sound::button(SharedString::from(format!("say-{id}")), "发音", move |cx| crate::sound::play_word(&ex, &rd, cx))),
         );
         if !c.card.sentence_furigana.is_empty() {
-            let hl = crate::review::word_span(&c.card.sentence, &c.card.expression)
-                .map(|r| (c.card.sentence[..r.start].chars().count(), c.card.sentence[..r.end].chars().count()));
+            let hl = crate::panel::ruby_highlight(&c.card.sentence_furigana, &c.card.expression, &c.card.reading);
             let (s, ex, rd) = (c.card.sentence.clone(), c.card.expression.clone(), c.card.reading.clone());
             detail = detail.child(
-                h_flex()
-                    .gap_1()
-                    .items_end()
-                    .child(div().min_w_0().child(ruby_line(&c.card.sentence_furigana, hl, cx)))
-                    .child(crate::sound::button(SharedString::from(format!("say-s-{id}")), "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx))),
+                ruby_line(&c.card.sentence_furigana, hl, cx)
+                    .child(div().pl_1().child(crate::sound::button(SharedString::from(format!("say-s-{id}")), "朗读例句", move |cx| crate::sound::play_sentence(&s, &ex, &rd, cx)))),
             );
         }
         for d in &c.card.definitions {

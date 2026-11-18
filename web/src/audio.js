@@ -22,7 +22,8 @@ for (const ev of ['pointerdown', 'keydown', 'touchend']) window.addEventListener
 export async function audioUrl({ e = '', r = '', s = '' }) {
   const [token, settings] = await Promise.all([kv.get('token'), kv.get('srs_settings')]);
   // The voice is part of the URL so the offline cache follows a voice change.
-  const q = new URLSearchParams({ e, r, s, v: settings?.voice || '', t: token || '' });
+  // `a` changes when the Mac makes clips differently (2: the card's reading is always spoken).
+  const q = new URLSearchParams({ e, r, s, v: settings?.voice || '', a: '2', t: token || '' });
   return `/api/audio?${q}`;
 }
 

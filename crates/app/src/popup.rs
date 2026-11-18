@@ -72,7 +72,7 @@ impl Render for PopupView {
             .child(
                 h_flex()
                     .flex_none()
-                    .child(div().text_xs().text_color(theme.muted_foreground).child("pic_yomi · 点别处关闭"))
+                    .child(div().text_xs().text_color(theme.muted_foreground).child("pic_yomi"))
                     .child(div().flex_1())
                     .child(Button::new("close").ghost().xsmall().icon(IconName::Close).on_click(cx.listener(|this, _, w, cx| this.close(&ClosePopup, w, cx)))),
             )

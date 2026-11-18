@@ -147,6 +147,18 @@ fn store(db: &Db, key: &str, bytes: Vec<u8>, mime: &str, source: &str) -> Result
     Ok(Audio { bytes, mime: mime.into(), source: source.into(), path })
 }
 
+/// Bumped when TTS clips are made differently; older clips are dropped.
+const TTS_REV: &str = "2"; // 2: the card's reading is always spoken
+
+/// Drop TTS clips made by an older rule (run once at startup).
+pub fn migrate(db: &Db) -> Result<()> {
+    if db.get_setting("audio.tts_rev")?.as_deref() != Some(TTS_REV) {
+        clear_tts(db)?;
+        db.set_setting("audio.tts_rev", Some(TTS_REV))?;
+    }
+    Ok(())
+}
+
 /// Forget TTS clips (after the voice or key changed); recordings stay.
 pub fn clear_tts(db: &Db) -> Result<()> {
     let files: Vec<String> = db
@@ -200,8 +212,7 @@ pub async fn word(db: &Db, expression: &str, reading: &str) -> Result<Audio> {
             eprintln!("lingua libre {expression}: {e:#}");
         }
     }
-    let homograph = has_other_readings(db, expression, &reading);
-    let (bytes, mime, source) = tts(db, &Speech::Word { expression, reading: &reading, homograph }).await?;
+    let (bytes, mime, source) = tts(db, &Speech::Word { expression, reading: &reading }).await?;
     if unsure {
         let path = std::env::temp_dir().join(format!("picyomi-{}.{}", uuid::Uuid::new_v4().simple(), ext(mime)));
         std::fs::write(&path, &bytes)?;
@@ -222,8 +233,7 @@ pub async fn sentence(db: &Db, sentence: &str, expression: &str, reading: &str) 
     if let Some(a) = cached(db, &key)? {
         return Ok(a);
     }
-    let homograph = !expression.is_empty() && !reading.is_empty() && has_other_readings(db, expression, &reading);
-    let (bytes, mime, source) = tts(db, &Speech::Sentence { sentence, expression, reading: &reading, homograph }).await?;
+    let (bytes, mime, source) = tts(db, &Speech::Sentence { sentence, expression, reading: &reading }).await?;
     store(db, &key, bytes, mime, source)
 }
 
@@ -239,17 +249,6 @@ pub async fn prefetch(db: &Db, expression: &str, reading: &str, sentence: &str) 
     }
 }
 
-/// The written form also has a different reading in the dictionaries.
-fn has_other_readings(db: &Db, expression: &str, reading: &str) -> bool {
-    if !kana::has_kanji(expression) {
-        return false;
-    }
-    let n: i64 = db
-        .lock()
-        .query_row("SELECT COUNT(DISTINCT reading) FROM terms WHERE expression=?1 AND reading<>?2", params![expression, reading], |r| r.get(0))
-        .unwrap_or(0);
-    n > 0
-}
 
 async fn jpod101(expression: &str, reading: &str) -> Result<Option<Vec<u8>>> {
     let url = reqwest::Url::parse_with_params(
@@ -319,38 +318,54 @@ async fn lingua_libre(expression: &str) -> Result<Option<Vec<u8>>> {
 }
 
 enum Speech<'a> {
-    Word { expression: &'a str, reading: &'a str, homograph: bool },
-    Sentence { sentence: &'a str, expression: &'a str, reading: &'a str, homograph: bool },
+    Word { expression: &'a str, reading: &'a str },
+    Sentence { sentence: &'a str, expression: &'a str, reading: &'a str },
 }
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
 }
 
-/// SSML for Azure.
-fn ssml(voice: &str, speech: &Speech) -> String {
-    let say = |word: &str, reading: &str, homograph: bool| {
-        if homograph {
-            format!("<sub alias=\"{}\">{}</sub>", xml_escape(reading), xml_escape(word))
-        } else {
-            xml_escape(word)
-        }
-    };
-    let body = match speech {
-        Speech::Word { expression, reading, homograph } => say(expression, reading, *homograph),
-        Speech::Sentence { sentence, expression, reading, homograph } => {
-            match (*homograph).then(|| crate::lookup::word_span(sentence, expression)).flatten() {
-                // Inflected forms keep the sentence's own okurigana; only a
-                // plain occurrence of the word gets its reading forced.
-                Some(span) if &sentence[span.clone()] == *expression => format!(
-                    "{}{}{}",
-                    xml_escape(&sentence[..span.start]),
-                    say(expression, reading, true),
-                    xml_escape(&sentence[span.end..])
-                ),
-                _ => xml_escape(sentence),
+/// The card's word as it appears in the sentence (maybe inflected) and how to
+/// say it with the card's reading: (before, shown, spoken, after).
+/// 綻ばせた with 綻ぶ【ほころぶ】 is spoken ほころばせた.
+fn word_in_sentence<'s>(sentence: &'s str, expression: &str, reading: &str) -> Option<(&'s str, &'s str, String, &'s str)> {
+    if expression.is_empty() || reading.is_empty() {
+        return None;
+    }
+    let span = crate::lookup::find_word(sentence, expression, reading)?;
+    let shown = &sentence[span.clone()];
+    if !kana::has_kanji(shown) {
+        return None;
+    }
+    let (a, b) = (sentence[..span.start].chars().count(), sentence[..span.end].chars().count());
+    let mut spoken = String::new();
+    let mut pos = 0;
+    for seg in crate::tokenize::furigana_for_word(sentence, expression, reading) {
+        let n = seg.t.chars().count();
+        if pos + n > a && pos < b {
+            match &seg.r {
+                Some(r) => spoken.push_str(r),
+                None => spoken.extend(seg.t.chars().skip(a.saturating_sub(pos)).take(b.min(pos + n) - a.max(pos))),
             }
         }
+        pos += n;
+    }
+    (!spoken.is_empty()).then(|| (&sentence[..span.start], shown, kana::kata_to_hira(&spoken), &sentence[span.end..]))
+}
+
+/// SSML for Azure. The card's word is always said with the card's reading:
+/// the voice misreads rare kanji (綻ぶ as たんぶ), and common words usually
+/// have a recording anyway, so TTS mostly speaks the rare ones.
+fn ssml(voice: &str, speech: &Speech) -> String {
+    let sub = |shown: &str, spoken: &str| format!("<sub alias=\"{}\">{}</sub>", xml_escape(spoken), xml_escape(shown));
+    let body = match speech {
+        Speech::Word { expression, reading } if kana::has_kanji(expression) && !reading.is_empty() => sub(expression, reading),
+        Speech::Word { expression, .. } => xml_escape(expression),
+        Speech::Sentence { sentence, expression, reading } => match word_in_sentence(sentence, expression, reading) {
+            Some((before, shown, spoken, after)) => format!("{}{}{}", xml_escape(before), sub(shown, &spoken), xml_escape(after)),
+            None => xml_escape(sentence),
+        },
     };
     format!(
         "<speak version=\"1.0\" xml:lang=\"ja-JP\" xmlns=\"http://www.w3.org/2001/10/synthesis\"><voice name=\"{}\">{body}</voice></speak>",
@@ -367,8 +382,11 @@ async fn tts(db: &Db, speech: &Speech<'_>) -> Result<(Vec<u8>, &'static str, &'s
         }
     }
     let text = match speech {
-        Speech::Word { expression, reading, homograph } => (if *homograph { reading } else { expression }).to_string(),
-        Speech::Sentence { sentence, .. } => sentence.to_string(),
+        Speech::Word { expression, reading } => (if reading.is_empty() { expression } else { reading }).to_string(),
+        Speech::Sentence { sentence, expression, reading } => match word_in_sentence(sentence, expression, reading) {
+            Some((before, _, spoken, after)) => format!("{before}{spoken}{after}"),
+            None => sentence.to_string(),
+        },
     };
     let bytes = tokio::task::spawn_blocking(move || macos_say(&text)).await??;
     Ok((bytes, "audio/mp4", "macos"))
@@ -414,14 +432,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ssml_forces_reading_only_for_homographs() {
-        let w = ssml("v", &Speech::Word { expression: "清掃", reading: "せいそう", homograph: false });
-        assert!(w.contains(">清掃</voice>"), "{w}");
-        let w = ssml("v", &Speech::Word { expression: "橋", reading: "はし", homograph: true });
-        assert!(w.contains("<sub alias=\"はし\">橋</sub>"), "{w}");
-        let s = ssml("v", &Speech::Sentence { sentence: "上手に話す", expression: "上手", reading: "じょうず", homograph: true });
-        assert!(s.contains("<sub alias=\"じょうず\">上手</sub>に話す"), "{s}");
-        let s = ssml("v", &Speech::Sentence { sentence: "A&B<c>", expression: "", reading: "", homograph: false });
+    fn ssml_says_the_card_reading() {
+        let w = ssml("v", &Speech::Word { expression: "綻ぶ", reading: "ほころぶ" });
+        assert!(w.contains("<sub alias=\"ほころぶ\">綻ぶ</sub>"), "{w}");
+        let w = ssml("v", &Speech::Word { expression: "あっさり", reading: "あっさり" });
+        assert!(w.contains(">あっさり</voice>"), "{w}");
+        let s = ssml("v", &Speech::Sentence { sentence: "初めて唇を綻ばせた。", expression: "綻ぶ", reading: "ほころぶ" });
+        assert!(s.contains("唇を<sub alias=\"ほころばせた\">綻ばせた</sub>。"), "{s}");
+        let s = ssml("v", &Speech::Sentence { sentence: "A&B<c>", expression: "", reading: "" });
         assert!(s.contains("A&amp;B&lt;c&gt;"), "{s}");
     }
 
