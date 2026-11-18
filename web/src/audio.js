@@ -1,23 +1,74 @@
-// Pronunciation playback through Web Audio.
-// iOS only lets audio start inside a tap, so the context is unlocked on the first
-// tap/key and stays usable afterwards (also for auto-play after a reveal).
+// Pronunciation playback: clips are decoded with Web Audio and played into a
+// MediaStream that one <audio> element plays.
+// Why the detour (WebKit, iOS):
+//  - an <audio> element is "media playback", so it is heard with the silent
+//    switch on (plain Web Audio is "ambient" and silenced);
+//  - an <audio> element with a normal source longer than 0.95 s makes the page
+//    a Now Playing app (Dynamic Island, lock screen), and after that every clip
+//    shows up there; an element playing a MediaStream never does.
+// iOS only lets audio start inside a tap: play() wakes the element and context
+// synchronously in the tap that asked for it.
 // Clips come from /api/audio; the service worker keeps them for offline review.
 
 import { kv } from './store.js';
 
 let ctx = null;
+let out = null; // where clips are connected: the stream, or the speakers as a fallback
+let el = null;
 let playing = null;
-const decoded = new Map();
+let idleTimer = 0;
+const loaded = new Map(); // request key -> AudioBuffer
 
+function context() {
+  if (!ctx) {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    out = ctx.destination;
+    try {
+      const dest = ctx.createMediaStreamDestination();
+      el = new Audio();
+      el.playsInline = true;
+      el.srcObject = dest.stream;
+      out = dest;
+    } catch (_) {
+      el = null;
+    }
+  }
+  return ctx;
+}
+
+/** Start the context and the stream element; call inside a tap/key. */
 export function unlockAudio() {
   try {
-    if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS 17+: play even with the silent switch on
-    ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
+    clearTimeout(idleTimer);
+    context();
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
+    if (el?.paused) el.play().catch(() => {});
   } catch (_) {}
 }
 
-for (const ev of ['pointerdown', 'keydown', 'touchend']) window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
+/** Pause the stream element a little after the last clip, so the phone's own
+ *  music is only interrupted while we speak. */
+function idleSoon() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (!playing && el && !el.paused) el.pause();
+  }, 2000);
+}
+
+// The first tap unlocks audio (iOS), so later auto-play works.
+let gestured = false;
+for (const ev of ['touchend', 'click', 'keydown']) {
+  window.addEventListener(
+    ev,
+    () => {
+      if (gestured) return;
+      gestured = true;
+      unlockAudio();
+      idleSoon();
+    },
+    { capture: true, passive: true },
+  );
+}
 
 export async function audioUrl({ e = '', r = '', s = '' }) {
   const [token, settings] = await Promise.all([kv.get('token'), kv.get('srs_settings')]);
@@ -27,36 +78,50 @@ export async function audioUrl({ e = '', r = '', s = '' }) {
   return `/api/audio?${q}`;
 }
 
-async function clip(req) {
-  const url = await audioUrl(req);
-  const key = url.replace(/&t=[^&]*/, '');
-  if (decoded.has(key)) return decoded.get(key);
-  const res = await fetch(url);
+const keyOf = ({ e = '', r = '', s = '' }) => `${e}|${r}|${s}`;
+
+/** Fetch and decode a clip into memory, so a later tap can start it at once. */
+export async function loadClip(req) {
+  const k = keyOf(req);
+  if (loaded.has(k)) return loaded.get(k);
+  const res = await fetch(await audioUrl(req));
   if (!res.ok) throw new Error(`没有找到发音（${res.status}）`);
   const bytes = await res.arrayBuffer();
-  unlockAudio();
-  const buf = await new Promise((ok, fail) => ctx.decodeAudioData(bytes, ok, fail));
-  decoded.set(key, buf);
+  const buf = await new Promise((ok, fail) => context().decodeAudioData(bytes, ok, fail));
+  loaded.set(k, buf);
   return buf;
+}
+
+function start(buf) {
+  if (playing) try { playing.stop(); } catch (_) {}
+  if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  if (el?.paused) el.play().catch(() => {});
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(out);
+  src.onended = () => {
+    if (playing === src) {
+      playing = null;
+      idleSoon();
+    }
+  };
+  src.start();
+  playing = src;
 }
 
 /** Play a word (`{e, r}`) or a sentence (`{s, e, r}`); a newer request replaces the current one. */
 let latest = 0;
-export async function play(req) {
+export function play(req) {
   const id = ++latest;
-  unlockAudio();
-  try {
-    const buf = await clip(req);
-    if (id !== latest) return;
-    if (playing) try { playing.stop(); } catch (_) {}
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(ctx.destination);
-    src.start();
-    playing = src;
-  } catch (err) {
-    console.warn('audio', err);
-  }
+  unlockAudio(); // synchronous: still inside the tap
+  const hit = loaded.get(keyOf(req));
+  if (hit) return start(hit);
+  loadClip(req)
+    .then((buf) => id === latest && start(buf))
+    .catch((err) => {
+      console.warn('audio', err);
+      if (!playing) idleSoon();
+    });
 }
 
 /** Fetch clips ahead of time (the service worker caches them for offline use). */

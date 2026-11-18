@@ -153,6 +153,8 @@ fn main() -> anyhow::Result<()> {
         });
     }
     let rt = runtime.handle().clone();
+    picyomi_core::cloud::spawn(svc.clone(), &rt);
+    svc.clone().spawn_explainer(&rt);
     // Keep the runtime alive for the whole process.
     let _runtime = Box::leak(Box::new(runtime));
 

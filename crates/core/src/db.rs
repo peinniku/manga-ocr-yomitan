@@ -90,6 +90,11 @@ CREATE TABLE IF NOT EXISTS audio_cache (
     created_at INTEGER
 );
 
+CREATE TABLE IF NOT EXISTS cloud_uploads (
+    key TEXT PRIMARY KEY,
+    at INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS media (
     id TEXT PRIMARY KEY,
     mime TEXT NOT NULL,
@@ -169,6 +174,7 @@ pub fn next_seq(c: &Connection) -> Result<i64> {
         "INSERT INTO meta(key, value) VALUES('seq', ?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         [n.to_string()],
     )?;
+    crate::cloud::nudge();
     Ok(n)
 }
 

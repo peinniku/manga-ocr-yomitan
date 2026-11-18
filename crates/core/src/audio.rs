@@ -148,7 +148,7 @@ fn store(db: &Db, key: &str, bytes: Vec<u8>, mime: &str, source: &str) -> Result
 }
 
 /// Bumped when TTS clips are made differently; older clips are dropped.
-const TTS_REV: &str = "2"; // 2: the card's reading is always spoken
+pub const TTS_REV: &str = "2"; // 2: the card's reading is always spoken
 
 /// Drop TTS clips made by an older rule (run once at startup).
 pub fn migrate(db: &Db) -> Result<()> {

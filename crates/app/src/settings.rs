@@ -30,6 +30,8 @@ pub struct SettingsView {
     pair_url: Option<String>,
     qr: Option<Arc<Image>>,
     tailscale_note: String,
+    /// The phone syncs through the cloud hub (not Tailscale).
+    cloud: bool,
 }
 
 fn input(window: &mut Window, cx: &mut Context<SettingsView>, placeholder: &str, value: String) -> Entity<InputState> {
@@ -58,9 +60,19 @@ impl SettingsView {
             model_progress: None,
             pair_url: None,
             qr: None,
-            tailscale_note: "正在读取 Tailscale 状态…".into(),
+            tailscale_note: "正在读取同步状态…".into(),
+            cloud: false,
         };
         this.load_pairing(cx);
+        // Keep the pairing QR and the sync status current (cloud set up later,
+        // last sync time) without reopening the app.
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor().timer(std::time::Duration::from_secs(15)).await;
+            if this.update(cx, |this, cx| this.load_pairing(cx)).is_err() {
+                break;
+            }
+        })
+        .detach();
         this
     }
 
@@ -224,6 +236,13 @@ impl SettingsView {
         cx.spawn(async move |this, cx| {
             let res = cx
                 .background_spawn(async move {
+                    // A cloud hub, when set up, is how the phone syncs.
+                    if let Some(cloud) = picyomi_core::cloud::CloudConfig::load(&service.db)? {
+                        let url = cloud.pair_url();
+                        let qr = qr_png(&url).ok();
+                        let note = cloud_note(&service.db, &cloud.url);
+                        return anyhow::Ok((Some(note), Some(url), qr, true));
+                    }
                     let token = picyomi_core::server::token(&service)?;
                     let out = std::process::Command::new("tailscale").args(["status", "--json"]).output();
                     let dns = out
@@ -233,17 +252,18 @@ impl SettingsView {
                         .filter(|s| !s.is_empty());
                     let url = dns.as_ref().map(|d| format!("https://{d}/app/#pair={token}"));
                     let qr = url.as_ref().and_then(|u| qr_png(u).ok());
-                    anyhow::Ok((dns, url, qr))
+                    anyhow::Ok((dns.map(|d| format!("本机 Tailscale 地址：{d}")), url, qr, false))
                 })
                 .await;
             this.update(cx, |this, cx| {
                 match res {
-                    Ok((Some(dns), url, qr)) => {
-                        this.tailscale_note = format!("本机 Tailscale 地址：{dns}");
+                    Ok((Some(note), url, qr, cloud)) => {
+                        this.tailscale_note = note;
+                        this.cloud = cloud;
                         this.pair_url = url;
                         this.qr = qr.map(|b| Arc::new(Image::from_bytes(ImageFormat::Png, b)));
                     }
-                    Ok((None, _, _)) => this.tailscale_note = "没有检测到 Tailscale。安装并登录后重新打开设置页。".into(),
+                    Ok((None, _, _, _)) => this.tailscale_note = "没有检测到 Tailscale。安装并登录后重新打开设置页。".into(),
                     Err(e) => this.tailscale_note = format!("读取配对信息失败：{e:#}"),
                 }
                 cx.notify();
@@ -251,6 +271,22 @@ impl SettingsView {
             .ok();
         })
         .detach();
+    }
+}
+
+/// 「云端：… · 上次同步 …」, or the last error.
+fn cloud_note(db: &picyomi_core::Db, url: &str) -> String {
+    let host = url.trim_start_matches("https://");
+    if let Some(e) = db.get_setting(picyomi_core::cloud::LAST_ERROR).ok().flatten() {
+        return format!("云端：{host} · 同步失败：{e}");
+    }
+    match db.get_setting(picyomi_core::cloud::LAST_SYNC).ok().flatten().and_then(|v| v.parse::<i64>().ok()) {
+        Some(t) => {
+            let ago = (picyomi_core::now_ms() - t).max(0) / 1000;
+            let when = if ago < 60 { "刚刚".to_string() } else if ago < 3600 { format!("{} 分钟前", ago / 60) } else { format!("{} 小时前", ago / 3600) };
+            format!("云端：{host} · 上次同步 {when}")
+        }
+        None => format!("云端：{host} · 等待第一次同步"),
     }
 }
 
@@ -435,21 +471,28 @@ impl Render for SettingsView {
             .when(!ready, |d| d.child(h_flex().child(Button::new("dl-models").small().primary().icon(IconName::ArrowDown).label("下载模型").on_click(cx.listener(|this, _, _, cx| this.download_models(cx))))))
             .when_some(self.model_progress.clone(), |d, p| d.child(div().text_xs().text_color(muted).child(p)));
 
-        let phone = section("手机同步", "手机用网页版复习，离线也能背，连上 Mac 后自动同步。", cx)
-            .child(div().text_sm().child(self.tailscale_note.clone()))
-            .child(div().text_xs().text_color(muted).child("第一次使用：在终端运行下面的命令，让手机能通过 Tailscale（只有你自己的设备能访问）以 HTTPS 打开。"))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .px_3()
-                    .py_1p5()
-                    .rounded_md()
-                    .bg(theme.secondary)
-                    .child(div().flex_1().min_w_0().font_family("Menlo").text_sm().child(SERVE_CMD))
-                    .child(copy_button("copy-serve", SERVE_CMD.to_string(), cx)),
-            )
-            .child(div().text_xs().text_color(muted).child("然后用 iPhone 相机扫二维码，在 Safari 打开后「分享 → 添加到主屏幕」。"))
+        let cloud = self.cloud;
+        let phone = section(
+            "手机同步",
+            if cloud { "手机和 Mac 都和云端同步，Mac 关机也能背。离线复习的记录联网后自动上传。" } else { "手机用网页版复习，离线也能背，连上 Mac 后自动同步。" },
+            cx,
+        )
+        .child(div().text_sm().child(self.tailscale_note.clone()))
+        .when(!cloud, |d| {
+            d.child(div().text_xs().text_color(muted).child("第一次使用：在终端运行下面的命令，让手机能通过 Tailscale（只有你自己的设备能访问）以 HTTPS 打开。"))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .px_3()
+                        .py_1p5()
+                        .rounded_md()
+                        .bg(theme.secondary)
+                        .child(div().flex_1().min_w_0().font_family("Menlo").text_sm().child(SERVE_CMD))
+                        .child(copy_button("copy-serve", SERVE_CMD.to_string(), cx)),
+                )
+        })
+        .child(div().text_xs().text_color(muted).child("用 iPhone 相机扫二维码，在 Safari 打开后「分享 → 添加到主屏幕」。"))
             .when_some(self.qr.clone(), |d, q| d.child(h_flex().child(div().flex_none().p_2().rounded_md().bg(gpui_kit::white()).child(img(q).size(px(180.))))))
             .when_some(self.pair_url.clone(), |d, u| {
                 d.child(

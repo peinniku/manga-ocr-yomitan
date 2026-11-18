@@ -263,6 +263,46 @@ impl Service {
         Ok(Some(self.update_card(card)?))
     }
 
+    /// Explain every live card that has no Chinese explanation yet (cards
+    /// imported from Anki, added before an LLM was set up, or whose first
+    /// attempt failed), newest first. Stops at the first error (offline, bad
+    /// key) so a broken setup is not hammered. Returns how many were filled.
+    pub async fn fill_missing_explanations(&self) -> Result<usize> {
+        if !crate::explain::LlmConfig::load(&self.db)?.is_configured() {
+            return Ok(0);
+        }
+        let ids: Vec<String> = {
+            let c = self.db.lock();
+            let mut st = c.prepare(
+                "SELECT id FROM cards WHERE deleted=0 AND json_extract(data,'$.explanation') IS NULL
+                 ORDER BY json_extract(data,'$.created_at') DESC",
+            )?;
+            st.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+        };
+        let mut n = 0;
+        for id in ids {
+            if self.fill_explanation(&id).await?.is_some() {
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    /// Keep explanations filled in the background: at startup, then every 15
+    /// minutes (catches cards whose explanation failed when they were added).
+    pub fn spawn_explainer(self: std::sync::Arc<Self>, rt: &tokio::runtime::Handle) {
+        rt.spawn(async move {
+            loop {
+                match self.fill_missing_explanations().await {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("explained {n} cards"),
+                    Err(e) => eprintln!("explanation backfill: {e:#}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
+            }
+        });
+    }
+
     /// Ask the model which reading the card's sentence uses (only for words
     /// written several ways); switch the card when it differs. Returns the old
     /// reading when the card changed.
@@ -370,6 +410,19 @@ impl Service {
         let n = st.query_map([start], |r| r.get::<_, String>(0))?.count();
         let _ = all;
         Ok(n)
+    }
+
+    /// Review settings the phone uses (served locally, pushed to the cloud hub).
+    pub fn srs_settings_json(&self) -> Result<serde_json::Value> {
+        let s = self.scheduler();
+        let tts = crate::audio::TtsConfig::load(&self.db)?;
+        Ok(serde_json::json!({
+            "desired_retention": s.config.desired_retention,
+            "new_per_day": self.new_cards_per_day(),
+            "four_buttons": self.four_buttons(),
+            "audio_autoplay": tts.autoplay,
+            "voice": if tts.azure_ready() { tts.voice } else { "macos".into() },
+        }))
     }
 
     pub fn review(&self, card_id: &str, rating: u8, device_id: &str, duration_ms: Option<i64>) -> Result<Schedule> {

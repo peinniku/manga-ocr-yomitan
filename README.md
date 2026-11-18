@@ -83,11 +83,24 @@ node extension/build.mjs
 
 ### 手机
 
+手机用网页版（PWA）复习，离线也能背。同步有两种方式，推荐云端：
+
+**云端（Cloudflare，免费，Mac 关机也能同步）**
+
+1. 注册 Cloudflare 账号，在 `cloud/` 里运行一次 `npx wrangler login`。
+2. 运行 `scripts/deploy-cloud.sh`：创建 D1 数据库、部署 Worker（`picyomi.<你的子域名>.workers.dev`），生成配对令牌并直接设为 Worker 的 secret（不显示、不进 git），再让这台 Mac 指向它。
+3. pic_yomi 在后台和云端同步（每 30 秒，以及本地有改动时），并上传手机需要的截图和发音。
+4. 打开「设置 → 手机同步」，用 iPhone 相机扫二维码，在 Safari 中打开 →「分享 → 添加到主屏幕」。
+
+云端只保存你自己的数据，所有接口都要配对令牌。卡片里有词典释义原文，只能自己用，不要公开。
+
+**Tailscale（数据只在自己的设备之间）**
+
 1. Mac 和 iPhone 都登录 [Tailscale](https://tailscale.com)，在 Tailscale 后台开启 HTTPS 证书（MagicDNS → HTTPS Certificates）。
 2. 在 Mac 终端运行一次：`tailscale serve --bg 7331`（只在你的 tailnet 内可见，不暴露到公网）。
-3. 打开 pic_yomi →「设置 → 手机同步」，用 iPhone 相机扫二维码，在 Safari 中打开 →「分享 → 添加到主屏幕」。
+3. 打开 pic_yomi →「设置 → 手机同步」扫二维码。
 
-手机上的复习记录先存在本机，离线也能背；联网（能连到 Mac）时自动同步。两边对同一张卡的复习会合并，并用同一份 FSRS 代码重算排程，不会冲突。
+两边对同一张卡的复习会合并，并用同一份 FSRS 代码重算排程，不会冲突。
 
 ### 发音
 
@@ -103,6 +116,7 @@ node extension/build.mjs
 - 数据目录：`~/Library/Application Support/pic_yomi/`（SQLite 数据库、生词卡截图、OCR 模型）。
 - 本地 API 只监听 `127.0.0.1`；除健康检查外，所有接口都要配对令牌。网页无法读取令牌，经 Tailscale 代理的请求只能通过二维码配对。
 - 只有「中文解释」会把**单词和所在句子**发给你配置的 LLM 服务。
+- 云端同步（如果部署了）：卡片、复习记录、截图和发音存在你自己的 Cloudflare 账号里。
 - 发音：单词会发给 JapanesePod101 和 Wikimedia Commons 查录音；合成语音会把单词或句子发给 Azure（填了 key 时）。
 
 ## 模型许可

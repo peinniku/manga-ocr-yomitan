@@ -1,0 +1,21 @@
+// pic_yomi cloud sync hub. Deploy with `scripts/deploy-cloud.sh` (see README).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "picyomi",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  // The phone web app, copied to public/app/ by the deploy script.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/health", "/"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "picyomi",
+      // Template: scripts/deploy-cloud.sh writes wrangler.local.jsonc (git-ignored) with the real id.
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ]
+}

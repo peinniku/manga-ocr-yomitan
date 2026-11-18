@@ -3,8 +3,8 @@
   "short_name": "pic_yomi",
   "scope": "/app/",
   "display": "standalone",
-  "background_color": "#f6f6f8",
-  "theme_color": "#3451c7",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
   "icons": [
     {
       "src": "/app/icon-192.png",

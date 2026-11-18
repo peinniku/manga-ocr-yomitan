@@ -219,6 +219,32 @@ fn main() -> Result<()> {
             }
             println!("checked {checked}, changed {changed}");
         }
+        "fill-explanations" => {
+            // fill-explanations: add the Chinese explanation to every card that has none
+            let svc = picyomi_core::service::Service::open()?;
+            let rt = tokio::runtime::Runtime::new()?;
+            println!("explained {} cards", rt.block_on(svc.fill_missing_explanations())?);
+        }
+        "cloud-setup" => {
+            // cloud-setup <https://picyomi.xxx.workers.dev>: point this Mac at the hub
+            let url = args.get(1).context("usage: cloud-setup <hub url>")?;
+            let db = picyomi_core::Db::open_default()?;
+            picyomi_core::cloud::configure(&db, url)?;
+            println!("cloud hub set to {url} (token stored locally; set it on the hub with scripts/deploy-cloud.sh)");
+        }
+        "cloud-sync" => {
+            // cloud-sync: one round now, with a report
+            let svc = picyomi_core::service::Service::open()?;
+            let rt = tokio::runtime::Runtime::new()?;
+            let t = Instant::now();
+            loop {
+                let r = rt.block_on(picyomi_core::cloud::sync_once(&svc))?;
+                println!("{} · {:.1}s", serde_json::to_string(&r)?, t.elapsed().as_secs_f64());
+                if r.pending_uploads == 0 || args.get(1).map(String::as_str) == Some("--once") {
+                    break;
+                }
+            }
+        }
         "highlights" => {
             // highlights: show which part of each card's sentence gets bolded (dry run)
             let db = picyomi_core::Db::open_default()?;

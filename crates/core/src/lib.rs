@@ -11,6 +11,7 @@ pub mod tokenize;
 pub mod vision;
 pub mod anki;
 pub mod audio;
+pub mod cloud;
 pub mod cards;
 pub mod explain;
 pub mod server;

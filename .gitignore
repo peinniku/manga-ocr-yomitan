@@ -37,3 +37,10 @@ web/dist/
 web/node_modules/
 web/public/srs.wasm
 web/public/icon-*.png
+
+# Cloudflare worker
+cloud/node_modules/
+cloud/public/
+cloud/.wrangler/
+cloud/.dev.vars
+cloud/wrangler.local.jsonc

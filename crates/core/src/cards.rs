@@ -150,6 +150,9 @@ pub fn backfill_highlights(db: &Db) -> Result<usize> {
     for card in cards {
         let furigana = card.compute_furigana();
         if card.sentence_furigana != furigana || card.highlight != card.compute_highlight() {
+            // A real change: newer timestamp, so the cloud hub accepts it.
+            let mut card = card;
+            card.updated_at = now_ms();
             save_card(db, &card)?;
             n += 1;
         }

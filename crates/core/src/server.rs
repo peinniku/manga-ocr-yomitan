@@ -269,15 +269,7 @@ async fn sync(State(svc): State<AppState>, Json(r): Json<SyncRequest>) -> ApiRes
 }
 
 async fn srs_settings(State(svc): State<AppState>) -> ApiResult<serde_json::Value> {
-    let s = svc.scheduler();
-    let tts = audio::TtsConfig::load(&svc.db)?;
-    Ok(Json(json!({
-        "desired_retention": s.config.desired_retention,
-        "new_per_day": svc.new_cards_per_day(),
-        "four_buttons": svc.four_buttons(),
-        "audio_autoplay": tts.autoplay,
-        "voice": if tts.azure_ready() { tts.voice } else { "macos".into() },
-    })))
+    Ok(Json(svc.srs_settings_json()?))
 }
 
 async fn media(State(svc): State<AppState>, Path(id): Path<String>) -> Response {
