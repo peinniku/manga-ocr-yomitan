@@ -1,0 +1,12 @@
+{
+  "name": "picyomi-cloud",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "4.164.0"
+  }
+}

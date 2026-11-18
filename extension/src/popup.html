@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>pic_yomi</title>
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #1d1d1f; --muted: #575761; --line: #d0d0d6; --accent: #3451c7; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #1f1f22; --fg: #ececf0; --muted: #b0b0b8; --line: #3a3a40; } }
+  body { margin: 0; width: 280px; font: 13px/1.5 system-ui, "PingFang SC", sans-serif; background: var(--bg); color: var(--fg); }
+  main { padding: 14px; display: grid; gap: 10px; }
+  h1 { font-size: 15px; margin: 0; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; text-align: center; }
+  .stats b { display: block; font-size: 18px; }
+  button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .err { color: #c92a2a; }
+</style>
+</head>
+<body>
+<main>
+  <h1>pic_yomi</h1>
+  <div id="state" class="muted">连接中…</div>
+  <div class="stats" hidden id="stats">
+    <div><b id="due">–</b><span class="muted">待复习</span></div>
+    <div><b id="today">–</b><span class="muted">今日已复习</span></div>
+    <div><b id="total">–</b><span class="muted">词单</span></div>
+  </div>
+  <div class="muted">按住 <b>Shift</b> 指向图片识别文字，再指向文字查词。</div>
+  <button id="toggle">显示 / 隐藏识别出的文字</button>
+  <button id="review" class="primary">打开复习</button>
+</main>
+<script src="popup.js"></script>
+</body>
+</html>

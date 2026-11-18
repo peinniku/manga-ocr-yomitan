@@ -1,0 +1,21 @@
+[package]
+name = "picyomi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+picyomi-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+gpui-kit = "0.10"
+global-hotkey = "0.10"
+xcap = "0.9"
+core-graphics = "0.25"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+raw-window-handle = "0.6"
