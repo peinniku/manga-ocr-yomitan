@@ -1,0 +1,30 @@
+[package]
+name = "picyomi-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite = { version = "0.43", features = ["bundled", "backup", "collation"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-rustls", "api-31"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "rayon"] }
+sha2 = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+picyomi-srs.workspace = true
+lindera = { version = "6.2", features = ["embed-ipadic"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+tokio.workspace = true
+axum = { version = "0.8", features = ["macros"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+base64 = "0.22"
+rand = "0.9"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-core-foundation = "0.3"
+objc2-vision = "0.3.2"
